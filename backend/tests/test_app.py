@@ -137,3 +137,45 @@ def test_expense_only_splits_among_tagged_participants(client):
     balances = client.get("/balances", headers=auth_headers(admin_token)).json()
     assert balances["balances"] == []
     assert balances["settlements_to_make"] == []
+
+
+def test_settlement_can_be_logged_by_either_party(client):
+    admin_resp = signup(client, "admin@example.com", household_name="Roommates")
+    household_id = admin_resp.json()["household_id"]
+    admin_id = admin_resp.json()["id"]
+
+    member_resp = signup(client, "member@example.com", household_id=household_id)
+    member_id = member_resp.json()["id"]
+    admin_token = login(client, "admin@example.com")
+    client.patch(f"/users/{member_id}/approve", json={"role": "member"}, headers=auth_headers(admin_token))
+
+    client.post(
+        "/expenses",
+        json={"amount": 100.0, "description": "Groceries", "participant_ids": [admin_id, member_id]},
+        headers=auth_headers(admin_token),
+    )
+
+    # Admin is owed by member; admin (the recipient) logs that member paid them back.
+    settle = client.post(
+        "/settlements",
+        json={"from_user_id": member_id, "to_user_id": admin_id, "amount": 50.0},
+        headers=auth_headers(admin_token),
+    )
+    assert settle.status_code == 201, settle.text
+    assert settle.json()["from_user_id"] == member_id
+    assert settle.json()["to_user_id"] == admin_id
+
+    balances_after = client.get("/balances", headers=auth_headers(admin_token)).json()
+    assert balances_after["balances"] == []
+
+    # A third party can't log a settlement between two other people.
+    outsider_resp = signup(client, "outsider@example.com", household_id=household_id)
+    outsider_id = outsider_resp.json()["id"]
+    client.patch(f"/users/{outsider_id}/approve", json={"role": "member"}, headers=auth_headers(admin_token))
+    outsider_token = login(client, "outsider@example.com")
+    forbidden = client.post(
+        "/settlements",
+        json={"from_user_id": member_id, "to_user_id": admin_id, "amount": 10.0},
+        headers=auth_headers(outsider_token),
+    )
+    assert forbidden.status_code == 403

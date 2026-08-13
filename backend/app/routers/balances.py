@@ -21,17 +21,28 @@ def read_balances(user: User = Depends(require_household), db: Session = Depends
 def create_settlement(
     payload: SettlementCreate, user: User = Depends(require_household), db: Session = Depends(get_db)
 ):
-    if payload.to_user_id == user.id:
+    from_user_id = payload.from_user_id or user.id
+    if from_user_id == payload.to_user_id:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cannot settle up with yourself")
-    to_user = (
-        db.query(User).filter(User.id == payload.to_user_id, User.household_id == user.household_id).first()
+    # Whichever side of the payment actually happened can log it (the payer
+    # marking "I paid", or the recipient marking "they paid me") -- but only
+    # if you were one of the two parties, so no one can log on others' behalf.
+    if user.id not in (from_user_id, payload.to_user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="You can only log a settlement you're a party to"
+        )
+
+    parties = (
+        db.query(User)
+        .filter(User.id.in_([from_user_id, payload.to_user_id]), User.household_id == user.household_id)
+        .all()
     )
-    if not to_user:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Recipient is not in your household")
+    if len(parties) != 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Both users must be in your household")
 
     settlement = Settlement(
         household_id=user.household_id,
-        from_user_id=user.id,
+        from_user_id=from_user_id,
         to_user_id=payload.to_user_id,
         amount=payload.amount,
         date=payload.date or date_type.today(),

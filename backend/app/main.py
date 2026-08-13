@@ -1,5 +1,8 @@
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.database import Base, engine
 from app.routers import auth, balances, expenses, households, users
@@ -26,3 +29,10 @@ app.include_router(balances.router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# Self-hosting stays a single process: serve the static frontend from the
+# same app, mounted last so it never shadows the API routes above.
+FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+if FRONTEND_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

@@ -100,6 +100,7 @@ class SettlementCreate(BaseModel):
     to_user_id: int
     amount: float = Field(gt=0)
     date: date_type | None = None
+    from_user_id: int | None = Field(default=None, description="Defaults to the current user")
 
 
 class SettlementOut(BaseModel):
