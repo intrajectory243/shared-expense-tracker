@@ -20,3 +20,6 @@ debug.log
 .vscode/
 .idea/
 .claude/
+
+# Local design reference, not part of the shipped app
+Claude design output for front/
