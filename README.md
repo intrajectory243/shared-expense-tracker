@@ -1,6 +1,6 @@
 # Halves
 
-A self-hosted, open-source expense tracker for splitting shared costs between roommates (or any group) — one running balance, minimal taps to log an expense, no clutter.
+A self-hosted, source-available expense tracker for splitting shared costs between roommates (or any group) — one running balance, minimal taps to log an expense, no clutter.
 
 **Status: beta.** Core flows are built and tested end-to-end; this isn't the 1.0 release yet.
 
@@ -114,4 +114,8 @@ expense-tracker-roadmap.md   Original phased roadmap this was built from
 
 ## Roadmap
 
-Built in phases: data model → backend → core frontend → calculation logic → deployment & polish (see `expense-tracker-roadmap.md`). Docker packaging is done; PWA installability and notifications are still open for a future pass.
+Built in phases: data model → backend → core frontend → calculation logic → deployment & polish (see `expense-tracker-roadmap.md`). Docker packaging, PWA installability, and push notifications are done; a Postgres migration path and DB sharding are deliberately deferred until they're actually needed.
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE) — free to use, self-host, modify, and share for any noncommercial purpose. Commercial use isn't permitted without the author's permission. See the [LICENSE](LICENSE) file for the full terms.
