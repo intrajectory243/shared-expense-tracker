@@ -1,4 +1,4 @@
-# Shared Expense Tracker — Roadmap
+# Shared Expense Tracker — Roadmap (now shipping as "Halves")
 
 A self-hosted, open-source web app for splitting and tracking shared expenses between roommates (or any group). Built as a web app instead of native apps to avoid iOS/Android fragmentation.
 
@@ -6,7 +6,7 @@ A self-hosted, open-source web app for splitting and tracking shared expenses be
 
 ---
 
-## Phase 1 — Data Model
+## Phase 1 — Data Model ✅ Done (with extras)
 
 Core object: **Expense Record**
 
@@ -19,23 +19,35 @@ Core object: **Expense Record**
 
 Note: not a simple "shared vs. personal" flag. Each expense has its **own participant list**, so costs only split among whoever is actually tagged on that specific item (e.g. milk bought for the whole house vs. milk bought for just two people).
 
+**Extras beyond original scope:**
+- Participants aren't just a list — each has a `share` (weight), so a split can be re-weighted (e.g. 2 shares vs 1) instead of always equal. Equal split is just everyone defaulting to share=1.
+- `payer` and `created_by` are separate fields — any member can log an expense on someone else's behalf, and the record keeps both.
+- A `Household` entity wraps everything (not in the original data model) — expenses, users, and settlements are all scoped to one.
+- A `Settlement` record type exists (from/to/amount/date) to log real repayments, separate from `Expense`.
+
 ---
 
-## Phase 2 — Backend
+## Phase 2 — Backend ✅ Done (with extras)
 
 - **Hosting model:** Self-hosted (not managed/serverless) — important since the goal is to open-source this for others to run themselves.
-- **Language/Framework:** Python — Flask or FastAPI as contenders (Django considered but too heavyweight for this scope).
-- **Database:** SQLite for now (single-file, zero-config, easy for others to self-host). Can migrate to Postgres later if usage grows (more users, heavier concurrent writes) — ORM makes that swap relatively painless.
-- **Caching:** Not needed now, but noted as an independent upgrade path later (e.g. Redis or in-memory) if reads become a bottleneck — separate concern from which database is used.
+- **Language/Framework:** FastAPI (decided over Flask/Django) + SQLAlchemy 2.0.
+- **Database:** SQLite, as planned — `DATABASE_URL` is env-configurable so a Postgres swap later stays a config change, not a rewrite. Postgres migration itself hasn't happened (not needed yet).
+- **Caching:** Implemented already, ahead of the original schedule — not Redis, but an in-database `BalanceCache` table: one cached balance-summary row per household, invalidated (deleted) by any write that could change it. A miss just recomputes and refills, so it can never serve a stale value.
 - **Auth:**
-  - Email + password, hashed storage.
-  - New sign-ups are **pending** until admin approves them.
-  - **Role-based access** — admin role has full control; regular user roles are scoped (e.g. to their own household), rather than blanket full access after approval.
-- **Domain:** User will provide their own domain; independent of hosting/backend choice — works with any of the options.
+  - Email + password, `bcrypt` hashed, JWT bearer tokens (`python-jose`).
+  - New sign-ups are **pending** until admin approves them — as planned.
+  - **Role-based access** — admin vs. member, scoped to household — as planned.
+- **Domain:** Unchanged — user provides their own; independent of the stack.
+
+**Extras beyond original scope:**
+- First user on a fresh instance auto-bootstraps as an approved admin (`BOOTSTRAP_ADMIN` setting), so a fresh self-hosted install is usable immediately without a manual DB edit.
+- Direct invite links (`/users/invite`) — an admin-generated link that skips the pending-approval queue entirely, on top of the plain sign-up-and-wait flow.
+- Membership lifecycle goes beyond pending/approved: **moved_out** (can still sign in, view history, settle up, but can't log new expenses) and **removed** (sign-in refused outright) — both reversible, and a household always keeps at least one admin as a guard rail.
+- 27 pytest tests covering auth, expense splitting, balance math, membership lifecycle, and weighted shares — not mentioned in the original roadmap at all.
 
 ---
 
-## Phase 3 — Core Frontend
+## Phase 3 — Core Frontend ✅ Done
 
 Screens:
 - Login page
@@ -45,23 +57,40 @@ Screens:
 
 Guiding constraint: launch-and-go simplicity, not feature-heavy.
 
+Built as a single-file vanilla-JS SPA (`app.js`, no framework, no build step), served as static files by the same FastAPI process. Branded **"Halves"**, implemented from a Claude Design mockup bundle (`Halves - Screens.dc.html`) that was handed off and built pixel-for-pixel. A Household screen was added beyond the original 4 screens, to handle member approval, invites, and role management from Phase 2's extras.
+
 ---
 
-## Phase 4 — Calculation Logic
+## Phase 4 — Calculation Logic ✅ Done (future consideration already resolved)
 
-- For each expense, split the cost **only among its tagged participants** (not a blanket shared pool).
+- For each expense, split the cost **only among its tagged participants** (not a blanket shared pool) — weighted by share, not just an even split.
 - Sum every user's net position across all expenses to determine final balances (who owes who, how much).
-- **Settle-up action** to log real-world repayment and zero out the balance.
-- **Future consideration (3+ people):** if the group grows beyond two, the math is no longer a simple two-way difference — will need a more general debt-simplification algorithm (net positive/negative per person, minimum number of payments to settle everyone).
+- **Settle-up action** to log real-world repayment and zero out the balance — can be logged by either side of the payment.
+- **3+ people case — resolved:** the greedy min-cash-flow debt-simplification the roadmap flagged as a future need is implemented (`simplify_debts` in `balances.py`) — repeatedly matches the largest creditor with the largest debtor until every net balance is zero, minimizing the number of payments.
 
 ---
 
-## Phase 5 — Deployment & Polish
+## Phase 5 — Deployment & Polish 🟡 Partially done
 
-- Packaged for self-hosting — Docker container as the current pick (guarantees consistency across systems), though a plain `requirements.txt` + setup instructions was discussed as a lighter-weight alternative.
-- PWA installability (installable on phones like a native app).
-- Possible future notifications (new expense added, approval requests, etc.)
+- ✅ Packaged for self-hosting — Docker (with Compose, bind-mounted for dev hot-reload) **and** the plain `requirements.txt` + `uvicorn` path both work, so both options from the original discussion shipped, not just one.
+- ⬜ PWA installability — **not started.** No manifest or service worker in `frontend/` yet.
+- ⬜ Notifications — **not started.**
+- ⬜ **DB efficiency at scale (new item):**
+  - **Now:** enable SQLite **WAL mode** (`PRAGMA journal_mode=WAL` in `database.py`) — lets reads and writes stop blocking each other. Cheap, ~15 min change. This alone comfortably covers realistic usage even at a stress-tested scale of 1000 households × 5 members (write volume stays well under 1/sec averaged, bursts clear in well under 100ms) — no further DB work needed at that scale.
+  - **Future option, not being built now:** per-household DB sharding (one SQLite file per household instead of one shared file) — viable *if* write volume ever grows ~2 orders of magnitude beyond the above, or if per-household fault isolation becomes a goal. Estimated a day or two of focused work: split schema (users/households/invites stay shared; expenses/participants/settlements/balance-cache move per-household), add an LRU-capped engine registry keyed by `household_id`, rewire `get_db()` and routers to use it, migrations become per-file. Rough water mark at 1000 households: ~300–750MB RAM with a sane LRU cap (~100–150 concurrently-open DBs), multiplied by worker-process count if running multiple uvicorn workers.
+  - **What keeps this option open (do this now, at zero cost):** don't write any query that joins or reads across households. Every current query already filters by `household_id` — this invariant is what makes sharding possible later, and it's free to preserve, just easy to accidentally break with a careless future feature.
 
 ---
 
-*Status: planning stage — roadmap only, no code written yet. Phases are expected to flex as implementation starts.*
+## Status
+
+**Beta — Phases 1–4 done (with several extras beyond original scope), Phase 5 partially done.**
+
+Remaining open items:
+1. **DB: enable WAL mode** — the only DB work happening right now.
+2. PWA installability (manifest + service worker)
+3. Notifications
+4. Postgres migration (not needed yet, flagged as a later option)
+5. Per-household DB sharding (future option only — see Phase 5 notes; not being built until write volume actually demands it)
+
+*Originally: planning stage, no code written yet. This section now reflects the actual implementation, checked against `backend/` and `frontend/` in the `shared-expense-tracker-main` upload.*

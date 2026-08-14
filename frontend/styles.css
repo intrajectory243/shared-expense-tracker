@@ -71,7 +71,7 @@ button { cursor: pointer; }
   }
 }
 
-@keyframes sheetUp { from { transform: translateY(102%); } to { transform: translateY(0); } }
+@keyframes sheetUp { from { transform: translateX(-50%) translateY(102%); } to { transform: translateX(-50%) translateY(0); } }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 .screen {
