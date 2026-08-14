@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.database import Base, engine
-from app.routers import auth, balances, expenses, households, users
+from app.routers import auth, balances, expenses, households, push, users
 
 Base.metadata.create_all(bind=engine)
 
@@ -24,6 +24,7 @@ app.include_router(households.router)
 app.include_router(users.router)
 app.include_router(expenses.router)
 app.include_router(balances.router)
+app.include_router(push.router)
 
 
 @app.get("/health")

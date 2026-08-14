@@ -7,6 +7,7 @@ from app.balances import invalidate_balance_cache
 from app.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin, require_household
 from app.models import User, UserStatus, Expense, ExpenseParticipant
+from app.push import send_to_users
 from app.schemas import ExpenseCreate, ExpenseOut, ExpenseSharesUpdate
 
 router = APIRouter(prefix="/expenses", tags=["expenses"])
@@ -53,6 +54,20 @@ def create_expense(
     invalidate_balance_cache(db, user.household_id)
     db.commit()
     db.refresh(expense)
+
+    other_member_ids = [
+        uid
+        for (uid,) in db.query(User.id)
+        .filter(User.household_id == user.household_id, User.status == UserStatus.approved, User.id != user.id)
+        .all()
+    ]
+    send_to_users(
+        db,
+        other_member_ids,
+        title="New expense",
+        body=f"{user.name} added “{expense.description}” — {expense.amount:,.0f} toman",
+        url="/",
+    )
     return expense
 
 

@@ -39,6 +39,7 @@ const state = {
   acceptInvite: null,
   editShares: { expenseId: null, amount: 0, draft: {} },
   editSharesSaving: false,
+  pushEnabled: false,
 };
 
 // ---------- helpers ----------
@@ -212,6 +213,7 @@ async function afterAuth() {
   if (state.me.status === 'pending') { state.route = 'pending'; state.noHousehold = false; return render(); }
   if (!state.me.household_id) { state.route = 'pending'; state.noHousehold = true; return render(); }
   await loadHome();
+  refreshPushState();
 }
 
 async function doLogin() {
@@ -277,8 +279,69 @@ function doLogout() {
   Object.assign(state, {
     me: null, users: [], former: [], household: null, expenses: [], settlements: [], balance: null,
     pending: [], requestRoles: {}, sheet: null, route: 'login', selectedMemberId: null,
-    inviteForm: { name: '', email: '', role: 'member' }, toast: null,
+    inviteForm: { name: '', email: '', role: 'member' }, toast: null, pushEnabled: false,
   });
+  render();
+}
+
+// ---------- push notifications ----------
+
+function pushSupported() {
+  return 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+}
+
+function urlBase64ToUint8Array(base64) {
+  const padding = '='.repeat((4 - (base64.length % 4)) % 4);
+  const raw = atob((base64 + padding).replace(/-/g, '+').replace(/_/g, '/'));
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+async function refreshPushState() {
+  if (!pushSupported()) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    state.pushEnabled = !!sub;
+    render();
+  } catch (e) { /* best-effort status check, safe to skip on failure */ }
+}
+
+async function toggleNotifications() {
+  if (!pushSupported()) {
+    flash('Notifications aren’t supported in this browser.');
+    return;
+  }
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+
+    if (existing) {
+      await existing.unsubscribe();
+      await api('/push/unsubscribe', { method: 'POST', body: { endpoint: existing.endpoint } });
+      state.pushEnabled = false;
+      flash('Notifications turned off');
+      return render();
+    }
+
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      flash(permission === 'denied' ? 'Notifications are blocked for this site.' : 'Notifications need permission to turn on.');
+      return render();
+    }
+
+    const { public_key } = await api('/push/vapid-public-key');
+    const sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(public_key),
+    });
+    await api('/push/subscribe', { method: 'POST', body: sub.toJSON() });
+    state.pushEnabled = true;
+    flash('Notifications turned on');
+  } catch (e) {
+    flash(e.message || 'Could not update notifications.');
+  }
   render();
 }
 
@@ -1084,6 +1147,12 @@ function renderMenuSheet() {
         <span style="flex:1">History</span>
         <span class="faint" style="font-size:13px">All ${state.expenses.length} expenses</span>
       </button>
+      ${pushSupported() ? `
+        <button class="menu-row" data-action="notifications.toggle">
+          <span style="flex:1">Notifications</span>
+          <span class="faint" style="font-size:13px">${state.pushEnabled ? 'On' : 'Off'}</span>
+        </button>
+      ` : ''}
       <button class="menu-row menu-row--last" data-action="logout">
         <span style="flex:1;color:var(--ink-soft)">Sign out</span>
       </button>
@@ -1411,6 +1480,7 @@ function handleAction(action, el) {
     case 'signup.submit': return doSignup();
     case 'logout': return doLogout();
     case 'menu.open': state.sheet = 'menu'; return render();
+    case 'notifications.toggle': return toggleNotifications();
     case 'openAdd': return openAddSheet();
     case 'openSettle': return openSettleSheet();
     case 'sheet.close': state.sheet = null; return render();

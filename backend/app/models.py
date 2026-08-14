@@ -145,3 +145,32 @@ class BalanceCache(Base):
     household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"), primary_key=True)
     payload: Mapped[str] = mapped_column(Text)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AppSetting(Base):
+    """Small instance-level key/value store for config generated at runtime
+    (currently just the VAPID keypair for web push). Keeps a fresh
+    self-hosted install zero-config while still persisting across restarts,
+    since this table lives in the same SQLite file as everything else."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)
+
+
+class PushSubscription(Base):
+    """A browser's Web Push endpoint for one user. A user can have several
+    (one per browser/device); an endpoint is unique across the instance, so
+    re-subscribing the same browser under a different account just moves it."""
+
+    __tablename__ = "push_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    endpoint: Mapped[str] = mapped_column(String(500), unique=True)
+    p256dh: Mapped[str] = mapped_column(String(255))
+    auth: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    user: Mapped["User"] = relationship()

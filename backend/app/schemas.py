@@ -139,6 +139,21 @@ class BalanceSummary(BaseModel):
     settlements_to_make: list[DebtEntry]
 
 
+# ---- Push notifications ----
+
+class PushSubscriptionIn(BaseModel):
+    endpoint: str
+    keys: dict[str, str]
+
+
+class PushUnsubscribe(BaseModel):
+    endpoint: str
+
+
+class VapidKeyOut(BaseModel):
+    public_key: str
+
+
 # ---- Settlements ----
 
 class SettlementCreate(BaseModel):

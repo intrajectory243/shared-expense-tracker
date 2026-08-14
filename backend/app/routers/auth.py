@@ -7,6 +7,7 @@ from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import Household, User, UserRole, UserStatus
+from app.push import send_to_users
 from app.schemas import AcceptInvite, Token, UserOut, UserSignup
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -41,6 +42,23 @@ def signup(payload: UserSignup, db: Session = Depends(get_db)):
     db.add(user)
     db.commit()
     db.refresh(user)
+
+    if user.status == UserStatus.pending and household is not None:
+        admin_ids = [
+            uid
+            for (uid,) in db.query(User.id)
+            .filter(
+                User.household_id == household.id, User.role == UserRole.admin, User.status == UserStatus.approved
+            )
+            .all()
+        ]
+        send_to_users(
+            db,
+            admin_ids,
+            title="New approval request",
+            body=f"{user.name} wants to join {household.name}",
+            url="/",
+        )
     return user
 
 
