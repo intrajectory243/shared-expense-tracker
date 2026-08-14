@@ -1,7 +1,7 @@
 import enum
 from datetime import date as date_type, datetime
 
-from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, String, Table, Column
+from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -16,17 +16,27 @@ class UserRole(str, enum.Enum):
 class UserStatus(str, enum.Enum):
     pending = "pending"
     approved = "approved"
+    # Left the household. Their expenses/settlements stay in history and in
+    # the balance math either way -- these two only differ in sign-in access.
+    moved_out = "moved_out"  # can still sign in: read balance/history, settle up, but not log/be tagged on new expenses
+    removed = "removed"  # sign-in refused entirely, including on an already-issued token
 
 
 # Each expense has its own participant list, independent of who paid —
 # this is what lets costs split only among whoever is actually tagged
-# on that specific item (roadmap Phase 1).
-expense_participants = Table(
-    "expense_participants",
-    Base.metadata,
-    Column("expense_id", ForeignKey("expenses.id", ondelete="CASCADE"), primary_key=True),
-    Column("user_id", ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
-)
+# on that specific item (roadmap Phase 1). `share` is a weight, not a dollar
+# amount: a participant with share=2 owes twice as much of the expense as
+# one with share=1. Equal split (the default at creation) is just every
+# tagged participant carrying share=1.
+class ExpenseParticipant(Base):
+    __tablename__ = "expense_participants"
+
+    expense_id: Mapped[int] = mapped_column(ForeignKey("expenses.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    share: Mapped[float] = mapped_column(Float, default=1.0)
+
+    expense: Mapped["Expense"] = relationship(back_populates="participant_shares")
+    user: Mapped["User"] = relationship()
 
 
 class Household(Base):
@@ -52,12 +62,16 @@ class User(Base):
     status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.pending)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Set only for accounts created via an admin invite; cleared once the
+    # invite is claimed. Distinguishes "invited" from organic sign-ups in
+    # the pending list, and is the secret an accept-invite call must present.
+    invite_token: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+
     household_id: Mapped[int | None] = mapped_column(ForeignKey("households.id"), nullable=True)
     household: Mapped[Household | None] = relationship(back_populates="users")
 
-    expenses_paid: Mapped[list["Expense"]] = relationship(back_populates="payer")
-    expenses_participated: Mapped[list["Expense"]] = relationship(
-        secondary=expense_participants, back_populates="participants"
+    expenses_paid: Mapped[list["Expense"]] = relationship(
+        foreign_keys="Expense.payer_id", back_populates="payer"
     )
 
     @property
@@ -68,6 +82,10 @@ class User(Base):
     def is_admin(self) -> bool:
         return self.role == UserRole.admin
 
+    @property
+    def invited(self) -> bool:
+        return self.invite_token is not None
+
 
 class Expense(Base):
     __tablename__ = "expenses"
@@ -75,6 +93,10 @@ class Expense(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     household_id: Mapped[int] = mapped_column(ForeignKey("households.id"), index=True)
     payer_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # Who actually entered this record -- may differ from payer_id, since any
+    # household member can log an expense on someone else's behalf. Always
+    # set server-side from the authenticated user; never client-supplied.
+    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
 
     amount: Mapped[float] = mapped_column(Float)
     description: Mapped[str] = mapped_column(String(255))
@@ -83,10 +105,15 @@ class Expense(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     household: Mapped[Household] = relationship(back_populates="expenses")
-    payer: Mapped[User] = relationship(back_populates="expenses_paid")
-    participants: Mapped[list[User]] = relationship(
-        secondary=expense_participants, back_populates="expenses_participated"
+    payer: Mapped[User] = relationship(foreign_keys=[payer_id], back_populates="expenses_paid")
+    created_by: Mapped[User] = relationship(foreign_keys=[created_by_id])
+    participant_shares: Mapped[list["ExpenseParticipant"]] = relationship(
+        back_populates="expense", cascade="all, delete-orphan"
     )
+
+    @property
+    def participants(self) -> list[User]:
+        return [ps.user for ps in self.participant_shares]
 
 
 class Settlement(Base):

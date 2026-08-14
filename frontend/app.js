@@ -14,6 +14,8 @@ const state = {
   token: localStorage.getItem(TOKEN_KEY) || null,
   me: null,
   users: [],
+  former: [],
+  household: null,
   expenses: [],
   settlements: [],
   balance: null,
@@ -29,6 +31,14 @@ const state = {
   draftSaving: false,
   settleDraft: { counterpartId: null, amount: '' },
   settleSaving: false,
+  selectedMemberId: null,
+  inviteForm: { name: '', email: '', role: 'member' },
+  inviteSaving: false,
+  renameDraft: '',
+  renameSaving: false,
+  acceptInvite: null,
+  editShares: { expenseId: null, amount: 0, draft: {} },
+  editSharesSaving: false,
 };
 
 // ---------- helpers ----------
@@ -64,8 +74,31 @@ function householdLabel(count) {
 }
 
 function nameOf(id) {
-  const u = state.users.find((x) => x.id === id);
+  const u = state.users.find((x) => x.id === id) || state.former.find((x) => x.id === id);
   return u ? u.name : 'Someone';
+}
+
+function firstName(name) {
+  return String(name || '').trim().split(/\s+/)[0] || name;
+}
+
+function netOf(userId) {
+  const b = state.balance || { balances: [] };
+  const entry = b.balances.find((x) => x.user_id === userId);
+  return entry ? entry.net : 0;
+}
+
+function standingLabel(userId) {
+  const n = netOf(userId);
+  if (Math.abs(n) <= EPS) return 'Square with the household.';
+  return n > 0 ? `Still owed ${fmt(n)} toman.` : `Still owes ${fmt(-n)} toman.`;
+}
+
+function formerStandingShort(m) {
+  const n = netOf(m.id);
+  const tier = m.status === 'moved_out' ? 'moved out' : 'no access';
+  const bal = Math.abs(n) <= EPS ? 'square' : n > 0 ? `owed ${fmt(n)}` : `owes ${fmt(-n)}`;
+  return `${tier} · ${bal}`;
 }
 
 function monthLabel(isoDate) {
@@ -142,6 +175,9 @@ function flash(msg) {
 // ---------- auth flow ----------
 
 async function boot() {
+  const inviteToken = new URLSearchParams(location.search).get('invite');
+  if (inviteToken) return bootAcceptInvite(inviteToken);
+
   if (!state.token) { state.route = 'login'; return render(); }
   try {
     state.me = await api('/auth/me');
@@ -154,8 +190,26 @@ async function boot() {
   }
 }
 
+async function bootAcceptInvite(token) {
+  state.route = 'accept-invite';
+  state.acceptInvite = { token, name: '', email: '', householdName: '', password: '', error: null, loading: false, loaded: false };
+  render();
+  try {
+    const preview = await api(`/auth/invite/${encodeURIComponent(token)}`, { auth: false });
+    state.acceptInvite.name = preview.name;
+    state.acceptInvite.email = preview.email;
+    state.acceptInvite.householdName = preview.household_name;
+    state.acceptInvite.loaded = true;
+  } catch (e) {
+    state.acceptInvite.error = e.message || 'This invite link is no longer valid.';
+  }
+  render();
+}
+
 async function afterAuth() {
-  if (state.me.status !== 'approved') { state.route = 'pending'; state.noHousehold = false; return render(); }
+  // Only truly-pending sign-ups get parked; moved_out still gets full home
+  // access (read + settle), just restricted from logging new expenses.
+  if (state.me.status === 'pending') { state.route = 'pending'; state.noHousehold = false; return render(); }
   if (!state.me.household_id) { state.route = 'pending'; state.noHousehold = true; return render(); }
   await loadHome();
 }
@@ -219,7 +273,12 @@ async function doSignup() {
 function doLogout() {
   state.token = null;
   localStorage.removeItem(TOKEN_KEY);
-  Object.assign(state, { me: null, users: [], expenses: [], settlements: [], balance: null, pending: [], requestRoles: {}, sheet: null, route: 'login' });
+  clearTimeout(toastTimer);
+  Object.assign(state, {
+    me: null, users: [], former: [], household: null, expenses: [], settlements: [], balance: null,
+    pending: [], requestRoles: {}, sheet: null, route: 'login', selectedMemberId: null,
+    inviteForm: { name: '', email: '', role: 'member' }, toast: null,
+  });
   render();
 }
 
@@ -227,14 +286,16 @@ function doLogout() {
 
 async function refreshData() {
   const isAdmin = state.me.role === 'admin';
-  const calls = [api('/users'), api('/expenses'), api('/balances'), api('/settlements')];
-  if (isAdmin) calls.push(api('/users/pending'));
+  const calls = [api('/users'), api('/expenses'), api('/balances'), api('/settlements'), api('/households', { auth: false })];
+  if (isAdmin) calls.push(api('/users/pending'), api('/users/former'));
   const results = await Promise.all(calls);
   state.users = results[0];
   state.expenses = results[1];
   state.balance = results[2];
   state.settlements = results[3];
-  state.pending = isAdmin ? results[4] : [];
+  state.household = results[4].find((h) => h.id === state.me.household_id) || null;
+  state.pending = isAdmin ? results[5] : [];
+  state.former = isAdmin ? results[6] : [];
 }
 
 async function loadHome() {
@@ -276,6 +337,147 @@ async function approveRequest(userId) {
     flash(e.message || 'Could not approve.');
   }
   render();
+}
+
+async function declineRequest(userId) {
+  const person = state.pending.find((p) => p.id === userId);
+  try {
+    await api(`/users/${userId}`, { method: 'DELETE' });
+    await refreshData();
+    flash(`Declined${person ? ' · ' + firstName(person.name) + ' won’t get in' : ''}`);
+  } catch (e) {
+    flash(e.message || 'Could not decline.');
+  }
+  render();
+}
+
+// ---------- member detail sheet ----------
+
+function findMember(id) {
+  return state.users.find((u) => u.id === id) || state.former.find((u) => u.id === id) || null;
+}
+
+function activeAdminCount() {
+  return state.users.filter((u) => u.role === 'admin').length;
+}
+
+function openMemberSheet(userId) {
+  state.selectedMemberId = userId;
+  state.sheet = 'member';
+  render();
+}
+
+async function pickMemberRole(role) {
+  const selected = findMember(state.selectedMemberId);
+  if (!selected || selected.role === role) return;
+  try {
+    await api(`/users/${selected.id}`, { method: 'PATCH', body: { role } });
+    await refreshData();
+    flash(`${firstName(selected.name)} is now ${role === 'admin' ? 'an admin' : 'a member'}`);
+  } catch (e) {
+    flash(e.message || 'Could not change their role.');
+  }
+  render();
+}
+
+async function runAccessAction(to, blocked) {
+  const selected = findMember(state.selectedMemberId);
+  if (!selected) return;
+  if (blocked) {
+    flash(selected.id === state.me.id ? 'Ask another admin to change your own access.' : 'A household needs at least one admin.');
+    return;
+  }
+  try {
+    await api(`/users/${selected.id}`, { method: 'PATCH', body: { status: to } });
+    await refreshData();
+    const who = firstName(selected.name);
+    state.sheet = null;
+    flash(to === 'approved' ? `${who} is back in` : to === 'moved_out' ? `${who} moved out · history and balance stay` : `${who} can no longer sign in`);
+  } catch (e) {
+    flash(e.message || 'Could not update their access.');
+  }
+  render();
+}
+
+// ---------- household rename ----------
+
+function openRenameSheet() {
+  state.renameDraft = state.household ? state.household.name : '';
+  state.renameSaving = false;
+  state.sheet = 'rename';
+  render();
+}
+
+async function saveRename() {
+  const name = (state.renameDraft || '').trim();
+  if (!name) return flash('Give the household a name.');
+  state.renameSaving = true;
+  render();
+  try {
+    await api(`/households/${state.me.household_id}`, { method: 'PATCH', body: { name } });
+    await refreshData();
+    state.sheet = null;
+    state.renameSaving = false;
+    flash(`Renamed · ${name}`);
+  } catch (e) {
+    state.renameSaving = false;
+    flash(e.message || 'Could not rename the household.');
+    render();
+  }
+}
+
+// ---------- invite ----------
+
+function openInviteSheet() {
+  state.inviteForm = { name: '', email: '', role: 'member' };
+  state.inviteSaving = false;
+  state.sheet = 'invite';
+  render();
+}
+
+async function sendInvite() {
+  const f = state.inviteForm;
+  const name = (f.name || '').trim();
+  const email = (f.email || '').trim();
+  if (!name || !email) return flash('Name and email, then create the link.');
+  state.inviteSaving = true;
+  render();
+  try {
+    const res = await api('/users/invite', { method: 'POST', body: { name, email, role: f.role } });
+    await refreshData();
+    state.sheet = null;
+    state.inviteSaving = false;
+    const link = `${location.origin}${location.pathname}?invite=${res.invite_token}`;
+    try { await navigator.clipboard.writeText(link); } catch (e) { /* clipboard may be unavailable; link is still valid to share manually */ }
+    flash(`Invited · link copied for ${firstName(name)}`);
+  } catch (e) {
+    state.inviteSaving = false;
+    flash(e.message || 'Could not create the invite.');
+    render();
+  }
+}
+
+// ---------- accept invite ----------
+
+async function submitAcceptInvite() {
+  const ai = state.acceptInvite;
+  if (!ai.password || ai.password.length < 8) { ai.error = 'Password needs at least 8 characters.'; return render(); }
+  ai.loading = true;
+  ai.error = null;
+  render();
+  try {
+    await api('/auth/accept-invite', { method: 'POST', auth: false, body: { token: ai.token, password: ai.password } });
+    const tok = await api('/auth/login', { method: 'POST', auth: false, form: { username: ai.email, password: ai.password } });
+    state.token = tok.access_token;
+    localStorage.setItem(TOKEN_KEY, state.token);
+    state.me = await api('/auth/me');
+    history.replaceState(null, '', location.pathname);
+    await afterAuth();
+  } catch (e) {
+    ai.loading = false;
+    ai.error = e.message || 'Could not join.';
+    render();
+  }
 }
 
 // ---------- add expense ----------
@@ -333,6 +535,54 @@ async function saveExpense() {
   }
 }
 
+// ---------- edit expense shares (admin) ----------
+
+function openEditSharesSheet(expenseId) {
+  const expense = state.expenses.find((e) => e.id === expenseId);
+  if (!expense) return;
+  const draft = {};
+  for (const s of expense.shares) draft[s.user_id] = s.share;
+  state.editShares = { expenseId, amount: expense.amount, draft };
+  state.sheet = 'editShares';
+  render();
+}
+
+function toggleShareParticipant(userId) {
+  const draft = state.editShares.draft;
+  if (draft[userId] !== undefined) delete draft[userId];
+  else draft[userId] = 1;
+  render();
+}
+
+function bumpShare(userId, delta) {
+  const draft = state.editShares.draft;
+  if (draft[userId] === undefined) return;
+  draft[userId] = Math.max(1, draft[userId] + delta);
+  render();
+}
+
+async function saveShares() {
+  const es = state.editShares;
+  const entries = Object.entries(es.draft);
+  if (!entries.length) return flash('Tag at least one person.');
+  state.editSharesSaving = true;
+  render();
+  try {
+    await api(`/expenses/${es.expenseId}/shares`, {
+      method: 'PATCH',
+      body: { participants: entries.map(([userId, share]) => ({ user_id: Number(userId), share })) },
+    });
+    state.sheet = null;
+    state.editSharesSaving = false;
+    await refreshData();
+    flash('Split updated');
+  } catch (e) {
+    state.editSharesSaving = false;
+    flash(e.message || 'Could not update the split.');
+    render();
+  }
+}
+
 // ---------- settle up ----------
 
 function openSettleSheet() {
@@ -379,9 +629,12 @@ function buildHistoryGroups() {
   const rows = [];
   for (const e of state.expenses) {
     rows.push({
-      kind: 'expense', sortKey: e.date, month: monthLabel(e.date), day: dayOfMonth(e.date),
+      kind: 'expense', id: e.id, sortKey: e.date, month: monthLabel(e.date), day: dayOfMonth(e.date),
       desc: e.description, cat: e.category, amount: e.amount,
       payerLabel: `${e.payer.name} paid`,
+      // Most expenses are logged by the payer themselves -- only call out
+      // who actually entered it when that's not the case, to avoid clutter.
+      loggedByLabel: e.created_by.id !== e.payer.id ? `logged by ${e.created_by.name}` : null,
       parts: e.participants.map((p) => initials(p.name)),
       shareLabel: e.participants.length > 1 ? `split ${e.participants.length} ways` : `all ${e.participants[0] ? e.participants[0].name : ''}`,
       titleColor: 'var(--ink)', tagClass: 'tag',
@@ -394,6 +647,7 @@ function buildHistoryGroups() {
       kind: 'settle', sortKey: s.date, month: monthLabel(s.date), day: dayOfMonth(s.date),
       desc: `${fromName} paid ${toName}`, cat: 'Settled', amount: s.amount,
       payerLabel: 'repayment',
+      loggedByLabel: null,
       parts: [initials(fromName), initials(toName)],
       shareLabel: 'balance reduced',
       titleColor: 'var(--sage-soft-text)', tagClass: 'tag tag--settled',
@@ -504,6 +758,9 @@ function renderHome() {
   const showSettle = !square && debts.length > 0;
   const recent = state.expenses.slice(0, 3);
   const stackUsers = state.users.slice(0, 4);
+  const isMovedOut = state.me.status === 'moved_out';
+  const householdName = state.household ? state.household.name : 'this household';
+  const topLabel = isMovedOut ? `${escapeHtml(householdName)} · past flat` : householdLabel(state.users.length);
 
   return `
     <div class="screen">
@@ -512,7 +769,7 @@ function renderHome() {
           <div class="avatar-stack">
             ${stackUsers.map((u) => `<div class="avatar ${avatarClass(u.id, u.id === state.me.id)}">${initials(u.name)}</div>`).join('')}
           </div>
-          <div class="household-label">${householdLabel(state.users.length)}</div>
+          <div class="household-label">${topLabel}</div>
         </div>
         <div class="icon-btn-wrap">
           <button class="icon-btn" data-action="menu.open" title="Menu">
@@ -551,9 +808,16 @@ function renderHome() {
         </div>
       ` : ''}
 
-      <button class="btn-primary" style="margin-top:34px;display:flex;align-items:center;justify-content:center;gap:10px" data-action="openAdd">
-        <span style="font-size:20px;line-height:1">+</span><span>Add expense</span>
-      </button>
+      ${!isMovedOut ? `
+        <button class="btn-primary" style="margin-top:34px;display:flex;align-items:center;justify-content:center;gap:10px" data-action="openAdd">
+          <span style="font-size:20px;line-height:1">+</span><span>Add expense</span>
+        </button>
+      ` : `
+        <div class="restricted-card">
+          <div class="eyebrow">Moved out</div>
+          <p>You’re no longer in ${escapeHtml(householdName)}. You can settle what’s outstanding and look back through history — logging new expenses is off.</p>
+        </div>
+      `}
 
       ${showSettle ? `<button class="btn-secondary" style="margin-top:10px" data-action="openSettle">Settle up</button>` : ''}
 
@@ -610,8 +874,12 @@ function renderHistory() {
       ${groups.map((g) => `
         <div class="month-group">
           <div class="month-head"><div class="eyebrow">${escapeHtml(g.month)}</div><div class="month-total tabular">${g.total}</div></div>
-          ${g.items.map((e) => `
-            <div class="history-row">
+          ${g.items.map((e) => {
+            const editable = state.me.role === 'admin' && e.kind === 'expense';
+            const tag = editable ? 'button' : 'div';
+            const attrs = editable ? `data-action="history.editShares" data-expense-id="${e.id}"` : '';
+            return `
+            <${tag} class="history-row" ${attrs}>
               <div class="history-day tabular">${e.day}</div>
               <div class="history-main">
                 <div class="history-top">
@@ -623,10 +891,11 @@ function renderHistory() {
                   <span class="payer-label">${escapeHtml(e.payerLabel)}</span>
                   <span class="parts-row">${e.parts.map((p) => `<span class="avatar avatar-xs">${p}</span>`).join('')}</span>
                   <span class="share-label">${escapeHtml(e.shareLabel)}</span>
+                  ${e.loggedByLabel ? `<span class="payer-label">${escapeHtml(e.loggedByLabel)}</span>` : ''}
                 </div>
               </div>
-            </div>
-          `).join('')}
+            </${tag}>`;
+          }).join('')}
         </div>
       `).join('')}
       <div style="height:20px"></div>
@@ -690,6 +959,50 @@ function renderAddSheet() {
       </div>
 
       <button class="btn-primary" style="margin-top:16px" data-action="draft.save" ${state.draftSaving ? 'disabled' : ''}>${state.draftSaving ? 'Saving…' : 'Save expense'}</button>
+    </div>
+  `;
+}
+
+function renderEditSharesSheet() {
+  const es = state.editShares;
+  const draft = es.draft;
+  const totalWeight = Object.values(draft).reduce((a, b) => a + b, 0);
+
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">Edit split</div>
+        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+      </div>
+
+      <div class="split-block">
+        <div class="split-head"><div style="font-size:14.5px" class="muted">Shares</div><div style="font-size:12.5px" class="faint">${fmt(es.amount)} toman total</div></div>
+        ${state.users.map((u) => {
+          const on = draft[u.id] !== undefined;
+          const share = draft[u.id] || 1;
+          const dollar = on && totalWeight > 0 ? fmt(es.amount * share / totalWeight) : '';
+          return `
+            <div class="share-row">
+              <button class="share-toggle ${on ? 'share-toggle--on' : ''}" data-action="shares.togglePerson" data-user-id="${u.id}">
+                <span class="avatar avatar-sm ${avatarClass(u.id, u.id === state.me.id)}">${initials(u.name)}</span>
+                <span class="share-name">${escapeHtml(u.name)}</span>
+              </button>
+              ${on ? `
+                <span class="share-dollar tabular faint">${dollar}</span>
+                <div class="stepper">
+                  <button class="stepper-btn" data-action="shares.dec" data-user-id="${u.id}">−</button>
+                  <span class="stepper-value tabular">${share}</span>
+                  <button class="stepper-btn" data-action="shares.inc" data-user-id="${u.id}">+</button>
+                </div>
+              ` : ''}
+            </div>
+          `;
+        }).join('')}
+      </div>
+
+      <button class="btn-primary" style="margin-top:18px" data-action="shares.save" ${state.editSharesSaving ? 'disabled' : ''}>${state.editSharesSaving ? 'Saving…' : 'Save split'}</button>
     </div>
   `;
 }
@@ -782,7 +1095,9 @@ function renderMenuSheet() {
 function renderHousehold() {
   const members = state.users;
   const pending = state.pending;
+  const former = state.former;
   const waitingCount = pending.length;
+  const householdName = state.household ? state.household.name : '';
 
   return `
     <div class="screen">
@@ -792,7 +1107,10 @@ function renderHousehold() {
       </div>
 
       <div style="margin-top:26px">
-        <div style="font-family:var(--font-serif);font-size:32px;line-height:1.1">Household</div>
+        <button class="hh-title-btn" data-action="household.openRename">
+          <span class="hh-title">${escapeHtml(householdName)}</span>
+          <span class="hh-rename-hint">rename</span>
+        </button>
         <div style="margin-top:7px;font-size:13.5px" class="muted">${members.length} member${members.length === 1 ? '' : 's'} · ${waitingCount ? waitingCount + ' waiting to join' : 'nobody waiting'}</div>
       </div>
 
@@ -812,9 +1130,10 @@ function renderHousehold() {
                 <button class="approve-btn" data-action="household.approve" data-user-id="${p.id}">Approve</button>
               </div>
               <div class="request-role-row">
-                <span class="faint" style="font-size:12.5px">Joins as</span>
+                <span class="faint" style="font-size:12.5px">${p.invited ? 'Invited as' : 'Joins as'}</span>
                 <button class="role-pill-btn" data-action="household.toggleRole" data-user-id="${p.id}">${role === 'admin' ? 'Admin' : 'Member'}</button>
                 <button class="role-swap-link" data-action="household.toggleRole" data-user-id="${p.id}">${role === 'admin' ? 'make member instead' : 'make admin instead'}</button>
+                <button class="request-decline-link" data-action="household.decline" data-user-id="${p.id}">Decline</button>
               </div>
             </div>
           `;
@@ -824,18 +1143,176 @@ function renderHousehold() {
       <div class="hh-section">
         <div class="hh-section-head"><div class="eyebrow">Members</div><div style="font-size:12px" class="faint">${members.length} approved</div></div>
         ${members.map((m) => `
-          <div class="member-row">
+          <button class="member-row" data-action="member.open" data-user-id="${m.id}">
             <div class="avatar avatar-30 ${avatarClass(m.id, m.id === state.me.id)}">${initials(m.name)}</div>
             <div style="flex:1;min-width:0">
               <div class="member-name">${escapeHtml(m.name)}</div>
               <div class="member-email">${escapeHtml(m.email)}</div>
             </div>
             <div class="member-role-badge ${m.role === 'admin' ? 'member-role-badge--admin' : 'member-role-badge--member'}">${m.role === 'admin' ? 'Admin' : 'Member'}</div>
-          </div>
+            <div class="chevron-right"></div>
+          </button>
         `).join('')}
-        <div class="hh-footnote">Removing or demoting a member isn’t possible yet — no endpoint for it.</div>
+        <button class="hh-add-btn" data-action="household.openInvite">
+          <span style="font-size:18px;line-height:1;font-weight:400">+</span><span>Add someone manually</span>
+        </button>
       </div>
+
+      ${former.length ? `
+        <div class="hh-section">
+          <div class="hh-section-head"><div class="eyebrow">No longer in the flat</div><div style="font-size:12px" class="faint">history kept</div></div>
+          ${former.map((m) => `
+            <button class="former-row" data-action="member.open" data-user-id="${m.id}">
+              <div class="avatar-dashed">${initials(m.name)}</div>
+              <div class="former-name">${escapeHtml(m.name)}</div>
+              <div class="former-standing tabular">${escapeHtml(formerStandingShort(m))}</div>
+              <div class="chevron-right"></div>
+            </button>
+          `).join('')}
+          <div class="hh-footnote">Their expenses, shares and any outstanding balance stay in the books.</div>
+        </div>
+      ` : ''}
       <div style="height:20px"></div>
+    </div>
+  `;
+}
+
+function renderMemberSheet() {
+  const selected = findMember(state.selectedMemberId);
+  if (!selected) return '';
+  const isActive = selected.status === 'approved';
+  const isSelf = selected.id === state.me.id;
+  const isLastAdmin = selected.role === 'admin' && selected.status === 'approved' && activeAdminCount() <= 1;
+
+  const roleOptionsHtml = ['member', 'admin'].map((r) => {
+    const on = selected.role === r;
+    const locked = isLastAdmin && r === 'member';
+    const cls = on ? 'role-option-btn role-option-btn--on' : locked ? 'role-option-btn role-option-btn--locked' : 'role-option-btn';
+    return `<button class="${cls}" data-action="member.pickRole" data-role="${r}">${r === 'admin' ? 'Admin' : 'Member'}</button>`;
+  }).join('');
+  const roleNote = selected.role === 'admin'
+    ? 'Admins approve sign-ups, add and remove people, and rename the household.'
+    : 'Members log and settle expenses. They never see this screen.';
+
+  const st = selected.status;
+  const firstNm = firstName(selected.name);
+  const rawFirst = st === 'approved'
+    ? { label: 'Mark as moved out', kind: 'quiet', to: 'moved_out' }
+    : { label: `Move ${firstNm} back in`, kind: 'quiet', to: 'approved' };
+  const rawSecond = st === 'removed'
+    ? { label: 'Give sign-in back (moved out)', kind: 'quiet', to: 'moved_out' }
+    : { label: 'Revoke sign-in entirely', kind: 'danger', to: 'removed' };
+  const actionsHtml = [rawFirst, rawSecond].map((a) => {
+    const blocked = (isSelf || isLastAdmin) && a.to !== 'approved';
+    const label = blocked ? (isSelf ? 'You can’t change your own access' : 'The last admin keeps access') : a.label;
+    const cls = blocked ? 'access-action-btn access-action-btn--locked' : a.kind === 'danger' ? 'access-action-btn access-action-btn--danger' : 'access-action-btn';
+    return `<button class="${cls}" data-action="member.runAccess" data-to="${a.to}" data-blocked="${blocked ? '1' : ''}">${escapeHtml(label)}</button>`;
+  }).join('');
+
+  const accessLabel = st === 'approved' ? 'In the flat' : st === 'moved_out' ? 'Moved out' : 'No access';
+  const accessNote = st === 'approved'
+    ? 'Moved out keeps their sign-in: they can see the balance, look back through history and settle up, but not log new expenses or be tagged on them. Revoking takes sign-in away entirely — the records stay either way.'
+    : st === 'moved_out'
+      ? 'They can still sign in to settle what’s outstanding. Nothing they logged was undone.'
+      : 'No sign-in. Their expenses, shares and balance are all still in the books.';
+
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="member-sheet-head">
+        <div class="avatar avatar-38 ${avatarClass(selected.id, selected.id === state.me.id)}">${initials(selected.name)}</div>
+        <div style="flex:1;min-width:0">
+          <div class="member-sheet-title">${escapeHtml(selected.name)}</div>
+          <div class="member-sheet-email">${escapeHtml(selected.email)}</div>
+        </div>
+        <button class="sheet-cancel" data-action="sheet.close">Done</button>
+      </div>
+
+      <div class="detail-row"><div class="detail-label">Standing</div><div class="detail-value tabular">${escapeHtml(standingLabel(selected.id))}</div></div>
+
+      ${isActive ? `
+        <div class="detail-row">
+          <div class="detail-label">Role</div>
+          <div class="role-options-row">${roleOptionsHtml}</div>
+        </div>
+        <div class="detail-note role-note">${escapeHtml(roleNote)}</div>
+      ` : ''}
+
+      <div class="detail-row"><div class="detail-label">Access</div><div class="detail-value">${escapeHtml(accessLabel)}</div></div>
+      <div class="access-actions">${actionsHtml}</div>
+      <div class="detail-note" style="margin-top:12px">${escapeHtml(accessNote)}</div>
+    </div>
+  `;
+}
+
+function renderInviteSheet() {
+  const f = state.inviteForm;
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">Add someone</div>
+        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+      </div>
+
+      <input class="underline-input" style="margin-top:18px" data-field="invite.name" value="${escapeHtml(f.name)}" placeholder="Name" />
+      <input class="underline-input" style="margin-top:14px" type="email" data-field="invite.email" value="${escapeHtml(f.email)}" placeholder="Email" />
+
+      <div class="invite-role-row">
+        <div class="detail-label">Joins as</div>
+        <div class="role-options-row">
+          ${['member', 'admin'].map((r) => `<button class="role-option-btn ${f.role === r ? 'role-option-btn--on' : ''}" data-action="invite.pickRole" data-role="${r}">${r === 'admin' ? 'Admin' : 'Member'}</button>`).join('')}
+        </div>
+      </div>
+
+      <button class="btn-primary" style="margin-top:22px" data-action="invite.send" ${state.inviteSaving ? 'disabled' : ''}>${state.inviteSaving ? 'Creating…' : 'Copy invite link'}</button>
+      <div class="detail-note" style="margin-top:12px">They’ll appear under Requests as invited, already approved the moment they set a password.</div>
+    </div>
+  `;
+}
+
+function renderRenameSheet() {
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">Household name</div>
+        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+      </div>
+      <input class="underline-input underline-input--serif" style="margin-top:18px" data-field="rename.draft" value="${escapeHtml(state.renameDraft)}" />
+      <button class="btn-primary" style="margin-top:22px" data-action="household.saveRename" ${state.renameSaving ? 'disabled' : ''}>${state.renameSaving ? 'Saving…' : 'Save'}</button>
+    </div>
+  `;
+}
+
+function renderAcceptInvite() {
+  const ai = state.acceptInvite || {};
+  if (!ai.loaded) {
+    return `
+      <div class="screen screen--auth">
+        <div class="brand">Halves</div>
+        ${ai.error
+          ? `<div class="error-row" style="margin-top:20px"><div class="error-dot"></div><div class="error-text">${escapeHtml(ai.error)}</div></div>`
+          : `<div class="tagline">Loading your invite…</div>`}
+        <div class="link-row"><button data-action="acceptInvite.toLogin">Back to sign in</button></div>
+      </div>
+    `;
+  }
+  return `
+    <div class="screen screen--auth">
+      <div class="brand">Halves</div>
+      <div class="tagline">${escapeHtml(ai.name)}, set a password to join ${escapeHtml(ai.householdName)}.</div>
+      <div class="form-stack">
+        <div class="field">
+          <label>Password</label>
+          <input type="password" data-field="acceptInvite.password" value="${escapeHtml(ai.password)}" placeholder="At least 8 characters" />
+        </div>
+      </div>
+      ${ai.error ? `<div class="error-row"><div class="error-dot"></div><div class="error-text">${escapeHtml(ai.error)}</div></div>` : ''}
+      <button class="btn-primary" style="margin-top:26px" data-action="acceptInvite.submit" ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'Joining…' : 'Join ' + escapeHtml(ai.householdName)}</button>
     </div>
   `;
 }
@@ -851,14 +1328,21 @@ function buildHtml() {
     case 'home': html = renderHome(); break;
     case 'history': html = renderHistory(); break;
     case 'household': html = renderHousehold(); break;
+    case 'accept-invite': html = renderAcceptInvite(); break;
     default: html = renderLoading();
   }
   if (state.sheet === 'add') html += renderAddSheet();
+  if (state.sheet === 'editShares') html += renderEditSharesSheet();
   if (state.sheet === 'settle') html += renderSettleSheet();
   if (state.sheet === 'menu') html += renderMenuSheet();
+  if (state.sheet === 'member') html += renderMemberSheet();
+  if (state.sheet === 'invite') html += renderInviteSheet();
+  if (state.sheet === 'rename') html += renderRenameSheet();
   if (state.toast) html += `<div class="toast">${escapeHtml(state.toast)}</div>`;
   return html;
 }
+
+let lastRenderedSheet = null;
 
 function render() {
   const app = document.getElementById('app');
@@ -867,7 +1351,17 @@ function render() {
   const selStart = active && typeof active.selectionStart === 'number' ? active.selectionStart : null;
   const selEnd = active && typeof active.selectionEnd === 'number' ? active.selectionEnd : null;
 
+  const isNewSheet = state.sheet !== lastRenderedSheet;
+  lastRenderedSheet = state.sheet;
+
   app.innerHTML = buildHtml();
+
+  if (!isNewSheet) {
+    const sheetPanel = app.querySelector('.sheet-panel');
+    const sheetOverlay = app.querySelector('.sheet-overlay');
+    if (sheetPanel) sheetPanel.style.animation = 'none';
+    if (sheetOverlay) sheetOverlay.style.animation = 'none';
+  }
 
   if (activeField) {
     const el = app.querySelector(`[data-field="${CSS.escape(activeField)}"]`);
@@ -898,6 +1392,10 @@ function handleFieldInput(field, value) {
     case 'draft.amount': state.draft.amount = value ? fmt(parseAmount(value)) : ''; break;
     case 'draft.desc': state.draft.desc = value; break;
     case 'settle.amount': state.settleDraft.amount = value ? fmt(parseAmount(value)) : ''; break;
+    case 'invite.name': state.inviteForm.name = value; break;
+    case 'invite.email': state.inviteForm.email = value; break;
+    case 'rename.draft': state.renameDraft = value; break;
+    case 'acceptInvite.password': state.acceptInvite.password = value; state.acceptInvite.error = null; break;
     default: return;
   }
   render();
@@ -921,10 +1419,29 @@ function handleAction(action, el) {
     case 'toHousehold': return goHousehold();
     case 'household.toggleRole': return toggleRequestRole(Number(el.dataset.userId));
     case 'household.approve': return approveRequest(Number(el.dataset.userId));
+    case 'household.decline': return declineRequest(Number(el.dataset.userId));
+    case 'household.openRename': return openRenameSheet();
+    case 'household.saveRename': return saveRename();
+    case 'household.openInvite': return openInviteSheet();
+    case 'invite.pickRole': state.inviteForm.role = el.dataset.role; return render();
+    case 'invite.send': return sendInvite();
+    case 'member.open': return openMemberSheet(Number(el.dataset.userId));
+    case 'member.pickRole': return pickMemberRole(el.dataset.role);
+    case 'member.runAccess': return runAccessAction(el.dataset.to, el.dataset.blocked === '1');
+    case 'acceptInvite.submit': return submitAcceptInvite();
+    case 'acceptInvite.toLogin':
+      history.replaceState(null, '', location.pathname);
+      state.route = 'login';
+      return render();
     case 'draft.pickCategory': state.draft.category = el.dataset.cat; return render();
     case 'draft.togglePerson': return toggleDraftPerson(Number(el.dataset.userId));
     case 'draft.cyclePayer': return cyclePayer();
     case 'draft.save': return saveExpense();
+    case 'history.editShares': return openEditSharesSheet(Number(el.dataset.expenseId));
+    case 'shares.togglePerson': return toggleShareParticipant(Number(el.dataset.userId));
+    case 'shares.inc': return bumpShare(Number(el.dataset.userId), 1);
+    case 'shares.dec': return bumpShare(Number(el.dataset.userId), -1);
+    case 'shares.save': return saveShares();
     case 'settle.pick': return pickCounterparty(Number(el.dataset.userId));
     case 'settle.full': { const t = getSettleTarget(); if (t) state.settleDraft.amount = fmt(t.amount); return render(); }
     case 'settle.half': { const t = getSettleTarget(); if (t) state.settleDraft.amount = fmt(t.amount / 2); return render(); }
@@ -955,6 +1472,7 @@ function initEvents() {
     if (!el) return;
     if (el.dataset.field === 'login.password') doLogin();
     if (el.dataset.field === 'signup.password') doSignup();
+    if (el.dataset.field === 'acceptInvite.password') submitAcceptInvite();
   });
 }
 

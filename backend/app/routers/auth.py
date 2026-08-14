@@ -7,7 +7,7 @@ from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import Household, User, UserRole, UserStatus
-from app.schemas import Token, UserOut, UserSignup
+from app.schemas import AcceptInvite, Token, UserOut, UserSignup
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -53,10 +53,39 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
             detail="Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    if user.status == UserStatus.removed:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="This account no longer has access to this household. Ask a household admin to restore it.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     token = create_access_token(subject=user.email)
     return Token(access_token=token)
 
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)):
+    return user
+
+
+@router.get("/invite/{token}")
+def preview_invite(token: str, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.invite_token == token).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found or already used")
+    return {"name": user.name, "email": user.email, "household_name": user.household.name}
+
+
+@router.post("/accept-invite", response_model=UserOut)
+def accept_invite(payload: AcceptInvite, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.invite_token == payload.token).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invite not found or already used")
+    # An invite means an admin already vetted them, so accepting it skips the
+    # usual pending-approval gate.
+    user.password_hash = hash_password(payload.password)
+    user.status = UserStatus.approved
+    user.invite_token = None
+    db.commit()
+    db.refresh(user)
     return user

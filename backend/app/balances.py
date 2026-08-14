@@ -1,9 +1,11 @@
 """Balance calculation (roadmap Phase 4).
 
-Each expense splits its amount only among its own tagged participants.
-Net position per user = total they paid - total of their own shares,
-adjusted by any settlements already logged. Positive net = owed to them;
-negative = they owe the household.
+Each expense splits its amount only among its own tagged participants,
+weighted by each participant's share (a plain weight, not a dollar amount --
+share=2 means twice the weight of share=1). Equal split is just everyone at
+share=1. Net position per user = total they paid - total of their own
+shares, adjusted by any settlements already logged. Positive net = owed to
+them; negative = they owe the household.
 
 For 3+ people, a raw pairwise "who owes who" table isn't well-defined, so
 settlements_to_make is produced with a greedy min-cash-flow simplification:
@@ -26,13 +28,13 @@ def compute_net_balances(db: Session, household_id: int) -> dict[int, float]:
 
     expenses = db.query(Expense).filter(Expense.household_id == household_id).all()
     for expense in expenses:
-        participants = expense.participants
-        if not participants:
+        shares = expense.participant_shares
+        total_weight = sum(ps.share for ps in shares)
+        if total_weight <= 0:
             continue
-        share = expense.amount / len(participants)
         net[expense.payer_id] += expense.amount
-        for participant in participants:
-            net[participant.id] -= share
+        for ps in shares:
+            net[ps.user_id] -= expense.amount * (ps.share / total_weight)
 
     settlements = db.query(Settlement).filter(Settlement.household_id == household_id).all()
     for settlement in settlements:

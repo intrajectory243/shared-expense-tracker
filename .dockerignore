@@ -1,0 +1,16 @@
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+**/*.egg-info/
+.env
+*.db
+*.sqlite3
+.DS_Store
+debug.log
+.vscode/
+.idea/
+.claude/
+.git/
+Claude design output for front/
+backend/tests/

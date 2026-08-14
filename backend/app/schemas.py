@@ -34,10 +34,38 @@ class UserOut(BaseModel):
     role: UserRole
     status: UserStatus
     household_id: int | None
+    invited: bool = False
 
 
 class UserApprove(BaseModel):
     role: UserRole = UserRole.member
+
+
+class UserUpdate(BaseModel):
+    """Role and/or access changes for an already-approved (or former) member.
+
+    Pending sign-ups use /approve instead; this never moves someone into or
+    out of 'pending'.
+    """
+
+    role: UserRole | None = None
+    status: UserStatus | None = None
+
+
+class InviteCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    email: EmailStr
+    role: UserRole = UserRole.member
+
+
+class InviteOut(BaseModel):
+    user: UserOut
+    invite_token: str
+
+
+class AcceptInvite(BaseModel):
+    token: str
+    password: str = Field(min_length=8, max_length=72)
 
 
 # ---- Households ----
@@ -47,6 +75,10 @@ class HouseholdOut(BaseModel):
 
     id: int
     name: str
+
+
+class HouseholdUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
 
 
 # ---- Expenses ----
@@ -60,6 +92,17 @@ class ExpenseCreate(BaseModel):
     payer_id: int | None = Field(default=None, description="Defaults to the current user")
 
 
+class ExpenseShare(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    user_id: int
+    share: float = Field(gt=0)
+
+
+class ExpenseSharesUpdate(BaseModel):
+    participants: list[ExpenseShare] = Field(min_length=1)
+
+
 class ExpenseOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -70,7 +113,9 @@ class ExpenseOut(BaseModel):
     date: date_type
     created_at: datetime
     payer: UserOut
+    created_by: UserOut
     participants: list[UserOut]
+    shares: list[ExpenseShare] = Field(validation_alias="participant_shares")
 
 
 # ---- Balances ----

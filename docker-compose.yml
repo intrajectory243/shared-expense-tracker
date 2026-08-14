@@ -1,0 +1,17 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8130:8000"
+    volumes:
+      - db-data:/app/backend/data
+      - ./frontend:/app/frontend:ro
+      - ./backend/app:/app/backend/app:ro
+      - ./backend/tests:/app/backend/tests:ro
+      - ./backend/pytest.ini:/app/backend/pytest.ini:ro
+    environment:
+      - DATABASE_URL=sqlite:////app/backend/data/expense_tracker.db
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  db-data:

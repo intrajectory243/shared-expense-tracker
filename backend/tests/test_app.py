@@ -179,3 +179,43 @@ def test_settlement_can_be_logged_by_either_party(client):
         headers=auth_headers(outsider_token),
     )
     assert forbidden.status_code == 403
+
+
+def test_expense_records_who_logged_it_separately_from_payer(client):
+    admin_resp = signup(client, "admin@example.com", household_name="Roommates")
+    household_id = admin_resp.json()["household_id"]
+    admin_id = admin_resp.json()["id"]
+
+    member_resp = signup(client, "member@example.com", household_id=household_id)
+    member_id = member_resp.json()["id"]
+    admin_token = login(client, "admin@example.com")
+    client.patch(f"/users/{member_id}/approve", json={"role": "member"}, headers=auth_headers(admin_token))
+    member_token = login(client, "member@example.com")
+
+    # Member logs an expense on the admin's behalf -- admin is the payer,
+    # but the member is the one who actually entered it. The API gives no
+    # way to spoof created_by; it always comes from the auth token.
+    expense = client.post(
+        "/expenses",
+        json={
+            "amount": 60.0,
+            "description": "Cab fare",
+            "participant_ids": [admin_id, member_id],
+            "payer_id": admin_id,
+        },
+        headers=auth_headers(member_token),
+    )
+    assert expense.status_code == 201, expense.text
+    body = expense.json()
+    assert body["payer"]["id"] == admin_id
+    assert body["created_by"]["id"] == member_id
+
+    # When someone logs their own expense, payer and created_by match.
+    own_expense = client.post(
+        "/expenses",
+        json={"amount": 20.0, "description": "Snacks", "participant_ids": [admin_id]},
+        headers=auth_headers(admin_token),
+    )
+    own_body = own_expense.json()
+    assert own_body["payer"]["id"] == admin_id
+    assert own_body["created_by"]["id"] == admin_id
