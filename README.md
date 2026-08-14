@@ -1,0 +1,117 @@
+# Halves
+
+A self-hosted, open-source expense tracker for splitting shared costs between roommates (or any group) — one running balance, minimal taps to log an expense, no clutter.
+
+**Status: beta.** Core flows are built and tested end-to-end; this isn't the 1.0 release yet.
+
+Created by [intrajectory243](https://github.com/intrajectory243), built collaboratively with [Claude Code](https://claude.com/claude-code).
+
+---
+
+## Why this exists
+
+Most shared-expense apps try to do too much. Halves is built around one design principle that applies to every feature: **keep it dead simple.** Log an expense in a few taps, see the balance front and center, and don't make people think about anything else. It's a web app rather than separate iOS/Android apps specifically to avoid platform fragmentation — one codebase, works on any phone or laptop with a browser.
+
+It's self-hosted by design: you run your own instance (Docker or a plain Python process), pointed at your own domain if you want one, with your own SQLite file as the source of truth. No accounts on a third-party service, no data leaving your server.
+
+## Features
+
+**Expenses**
+- Each expense has its own participant list — costs split only among whoever's actually tagged on that item, not a blanket "shared" flag. Milk for the whole house and milk for just two people are tracked differently.
+- Equal split by default. Admins can re-weight any expense afterwards (e.g. 2 shares vs 1 share instead of a straight 50/50) from the History screen.
+- Every expense records who paid *and*, separately, who actually logged it — since any member can log an expense on someone else's behalf.
+
+**Balances & settling up**
+- One net number per person: what they're owed or what they owe.
+- For groups of 3+, a greedy min-cash-flow algorithm suggests the minimum number of payments needed to settle everyone up, not just a raw pairwise table.
+- Settle-up action logs a real repayment and zeroes out the balance; it can be logged by either side of the payment.
+
+**Households & membership**
+- Sign up to create a new household or join an existing one; new joins are pending until an admin approves them. The very first person to sign up on a fresh instance is auto-approved as admin, so it's usable immediately after install.
+- Admins can promote/demote roles, rename the household, invite people directly (shareable link, skips the approval queue), and decline pending requests.
+- Leaving is a status change, never a deletion. **Moved out** keeps someone's sign-in but restricts it (they can still see history and settle up, just can't log new expenses). **Revoked** removes sign-in entirely. Either way, their past expenses, shares, and any outstanding balance stay in the books, and both states can be reversed.
+
+## Tech stack
+
+- **Backend:** Python, FastAPI, SQLAlchemy 2.0, SQLite, JWT bearer auth (`python-jose`), `bcrypt` for password hashing.
+- **Frontend:** Vanilla JS single-page app — no build step, no framework. A single `app.js` re-renders from a plain state object; FastAPI serves it as static files from the same process.
+- **Tests:** pytest, 27 backend tests covering auth, expense splitting, balance math, membership lifecycle, and weighted shares.
+
+## Getting started
+
+### Option A — Docker (recommended)
+
+Requires [Docker](https://docs.docker.com/get-docker/) with the Compose plugin.
+
+```bash
+git clone https://github.com/intrajectory243/shared-expense-tracker.git
+cd shared-expense-tracker
+docker compose up --build
+```
+
+The app will be available at **http://localhost:8130**. The SQLite database lives in a named Docker volume (`db-data`), so it survives container restarts — `docker compose down -v` if you ever want to wipe it and start fresh.
+
+The included `docker-compose.yml` is set up for active development: `backend/app` and `frontend` are bind-mounted into the container and the server runs with `--reload`, so local edits apply immediately (a browser refresh for frontend changes, automatic for backend changes) without rebuilding the image.
+
+### Option B — Run locally without Docker
+
+Requires Python 3.12+.
+
+```bash
+git clone https://github.com/intrajectory243/shared-expense-tracker.git
+cd shared-expense-tracker/backend
+python3 -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload
+```
+
+The app (frontend included) will be available at **http://localhost:8000**.
+
+### First run
+
+Sign up on the login screen — the first account created on a fresh database is automatically approved as admin. Everyone who signs up after that lands in a pending state until an admin approves them from the Household screen (or gets a direct invite link, which skips the queue).
+
+## Configuration
+
+Settings are read from environment variables (or a `.env` file in `backend/`), all optional with sensible defaults for local use:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `DATABASE_URL` | `sqlite:///./expense_tracker.db` | Swap for a Postgres URL later if you outgrow SQLite — the ORM makes that migration painless. |
+| `SECRET_KEY` | `dev-secret-key-change-me` | **Change this** for any real deployment — it signs auth tokens. |
+| `ACCESS_TOKEN_EXPIRE_MINUTES` | `10080` (7 days) | How long a login session lasts. |
+| `ALGORITHM` | `HS256` | JWT signing algorithm. |
+| `BOOTSTRAP_ADMIN` | `true` | Whether the first-ever signup is auto-approved as admin. |
+
+## Running tests
+
+```bash
+cd backend
+pytest
+```
+
+(Or, if the Docker container is already running: `docker compose exec app bash -c "cd /app/backend && pytest"`.)
+
+## Project structure
+
+```
+backend/
+  app/
+    main.py          FastAPI app, mounts the frontend as static files
+    models.py         SQLAlchemy models
+    schemas.py        Pydantic request/response schemas
+    dependencies.py   Auth + authorization dependency chain
+    balances.py        Balance & debt-simplification calculation
+    routers/            auth, users, households, expenses, balances
+  tests/               pytest suite
+frontend/
+  index.html
+  app.js               Single-file SPA: state, render, event handling
+  styles.css
+expense-tracker-roadmap.md   Original phased roadmap this was built from
+```
+
+## Roadmap
+
+Built in phases: data model → backend → core frontend → calculation logic → deployment & polish (see `expense-tracker-roadmap.md`). Docker packaging is done; PWA installability and notifications are still open for a future pass.

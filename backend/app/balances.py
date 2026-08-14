@@ -15,9 +15,9 @@ net balance is zeroed out, minimizing the number of payments needed.
 
 from collections import defaultdict
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models import Expense, Settlement, User
+from app.models import BalanceCache, Expense, Settlement, User
 from app.schemas import BalanceEntry, BalanceSummary, DebtEntry
 
 EPSILON = 0.005  # sub-cent noise from float division; ignore balances this small
@@ -26,7 +26,16 @@ EPSILON = 0.005  # sub-cent noise from float division; ignore balances this smal
 def compute_net_balances(db: Session, household_id: int) -> dict[int, float]:
     net: dict[int, float] = defaultdict(float)
 
-    expenses = db.query(Expense).filter(Expense.household_id == household_id).all()
+    # participant_shares is lazy by default -- without eager-loading it here,
+    # touching it per expense below turns this into one query per expense
+    # (an N+1 that's invisible at a handful of expenses but costs seconds of
+    # round-trip overhead once a household has hundreds+).
+    expenses = (
+        db.query(Expense)
+        .filter(Expense.household_id == household_id)
+        .options(selectinload(Expense.participant_shares))
+        .all()
+    )
     for expense in expenses:
         shares = expense.participant_shares
         total_weight = sum(ps.share for ps in shares)
@@ -95,3 +104,26 @@ def get_balance_summary(db: Session, household_id: int) -> BalanceSummary:
     ]
 
     return BalanceSummary(balances=balances, settlements_to_make=debts)
+
+
+def get_cached_balance_summary(db: Session, household_id: int) -> BalanceSummary:
+    """Same result as get_balance_summary, but served from balance_cache when
+    present. A cache row only ever holds the output of a real get_balance_summary
+    call -- there's no separate update path that could drift from it, so a hit
+    is always exactly what a fresh computation would have returned."""
+    cached = db.get(BalanceCache, household_id)
+    if cached is not None:
+        return BalanceSummary.model_validate_json(cached.payload)
+
+    summary = get_balance_summary(db, household_id)
+    db.merge(BalanceCache(household_id=household_id, payload=summary.model_dump_json()))
+    db.commit()
+    return summary
+
+
+def invalidate_balance_cache(db: Session, household_id: int) -> None:
+    """Call before committing any write that could change a household's balance
+    (new/edited/deleted expense, new settlement). Deliberately doesn't commit --
+    it rides along in the caller's own transaction so the invalidation can never
+    succeed or fail independently of the write that made it necessary."""
+    db.query(BalanceCache).filter(BalanceCache.household_id == household_id).delete()

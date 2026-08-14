@@ -1,8 +1,9 @@
 from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
+from app.balances import invalidate_balance_cache
 from app.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin, require_household
 from app.models import User, UserStatus, Expense, ExpenseParticipant
@@ -49,15 +50,22 @@ def create_expense(
         participant_shares=[ExpenseParticipant(user_id=uid, share=1.0) for uid in payload.participant_ids],
     )
     db.add(expense)
+    invalidate_balance_cache(db, user.household_id)
     db.commit()
     db.refresh(expense)
     return expense
 
 
+def _with_participants(query):
+    # participant_shares (and each share's user) are lazy by default -- serializing
+    # ExpenseOut.participants/.shares without this eager-loads one query *per expense*.
+    return query.options(selectinload(Expense.participant_shares).selectinload(ExpenseParticipant.user))
+
+
 @router.get("", response_model=list[ExpenseOut])
 def list_expenses(user: User = Depends(require_household), db: Session = Depends(get_db)):
     return (
-        db.query(Expense)
+        _with_participants(db.query(Expense))
         .filter(Expense.household_id == user.household_id)
         .order_by(Expense.date.desc(), Expense.id.desc())
         .all()
@@ -66,7 +74,11 @@ def list_expenses(user: User = Depends(require_household), db: Session = Depends
 
 @router.get("/{expense_id}", response_model=ExpenseOut)
 def get_expense(expense_id: int, user: User = Depends(require_household), db: Session = Depends(get_db)):
-    expense = db.query(Expense).filter(Expense.id == expense_id, Expense.household_id == user.household_id).first()
+    expense = (
+        _with_participants(db.query(Expense))
+        .filter(Expense.id == expense_id, Expense.household_id == user.household_id)
+        .first()
+    )
     if not expense:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
     return expense
@@ -91,6 +103,7 @@ def update_expense_shares(
     expense.participant_shares = [
         ExpenseParticipant(user_id=p.user_id, share=p.share) for p in payload.participants
     ]
+    invalidate_balance_cache(db, admin.household_id)
     db.commit()
     db.refresh(expense)
     return expense
@@ -104,4 +117,5 @@ def delete_expense(expense_id: int, user: User = Depends(require_household), db:
     if expense.payer_id != user.id and not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the payer or an admin can delete this expense")
     db.delete(expense)
+    invalidate_balance_cache(db, user.household_id)
     db.commit()

@@ -1,7 +1,7 @@
 import enum
 from datetime import date as date_type, datetime
 
-from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, String
+from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -132,3 +132,16 @@ class Settlement(Base):
     household: Mapped[Household] = relationship(back_populates="settlements")
     from_user: Mapped[User] = relationship(foreign_keys=[from_user_id])
     to_user: Mapped[User] = relationship(foreign_keys=[to_user_id])
+
+
+class BalanceCache(Base):
+    """One cached GET /balances response per household, invalidated (deleted)
+    by any write that could change it -- new expense, share edit, deleted
+    expense, or settlement. A miss just recomputes and refills it, so this
+    can never serve a wrong value, only a briefly absent one."""
+
+    __tablename__ = "balance_cache"
+
+    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"), primary_key=True)
+    payload: Mapped[str] = mapped_column(Text)
+    computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

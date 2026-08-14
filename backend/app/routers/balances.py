@@ -3,7 +3,7 @@ from datetime import date as date_type
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.balances import get_balance_summary
+from app.balances import get_cached_balance_summary, invalidate_balance_cache
 from app.database import get_db
 from app.dependencies import require_household
 from app.models import Settlement, User
@@ -14,7 +14,7 @@ router = APIRouter(tags=["balances"])
 
 @router.get("/balances", response_model=BalanceSummary)
 def read_balances(user: User = Depends(require_household), db: Session = Depends(get_db)):
-    return get_balance_summary(db, user.household_id)
+    return get_cached_balance_summary(db, user.household_id)
 
 
 @router.post("/settlements", response_model=SettlementOut, status_code=status.HTTP_201_CREATED)
@@ -48,6 +48,7 @@ def create_settlement(
         date=payload.date or date_type.today(),
     )
     db.add(settlement)
+    invalidate_balance_cache(db, user.household_id)
     db.commit()
     db.refresh(settlement)
     return settlement
