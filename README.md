@@ -84,6 +84,19 @@ Settings are read from environment variables (or a `.env` file in `backend/`), a
 | `ALGORITHM` | `HS256` | JWT signing algorithm. |
 | `BOOTSTRAP_ADMIN` | `true` | Whether the first-ever signup is auto-approved as admin. |
 
+## Database migrations
+
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org/), not `create_all()` — that only creates missing tables, it doesn't alter existing ones, so an early beta relied on hand-editing the live database whenever a column changed. Migrations run automatically on every startup (`app/migrations.py`, called from `app/main.py`), so upgrading is just `git pull` and restart — no manual command required for a normal update.
+
+If you're changing `app/models.py`, generate the migration that goes with it:
+
+```bash
+cd backend
+alembic revision --autogenerate -m "describe the change"
+```
+
+Review the generated file in `alembic/versions/` before committing — autogenerate is reliable for additive changes (new tables/columns) but won't always guess renames or data backfills correctly.
+
 ## Running tests
 
 ```bash
@@ -103,7 +116,9 @@ backend/
     schemas.py        Pydantic request/response schemas
     dependencies.py   Auth + authorization dependency chain
     balances.py        Balance & debt-simplification calculation
-    routers/            auth, users, households, expenses, balances
+    migrations.py      Runs Alembic migrations on startup
+    routers/            auth, users, households, expenses, balances, push
+  alembic/             Migration scripts (see "Database migrations" above)
   tests/               pytest suite
 frontend/
   index.html

@@ -4,10 +4,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from app.database import Base, engine
+from app.migrations import run_migrations
 from app.routers import auth, balances, expenses, households, push, users
 
-Base.metadata.create_all(bind=engine)
+run_migrations()
 
 app = FastAPI(title="Shared Expense Tracker")
 
