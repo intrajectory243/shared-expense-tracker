@@ -743,7 +743,7 @@ function renderLogin() {
       <div class="form-stack">
         <div class="field">
           <label>Email</label>
-          <input type="email" data-field="login.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" autocomplete="username" />
+          <input type="email" dir="ltr" data-field="login.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" autocomplete="username" />
         </div>
         <div class="field">
           <label>Password</label>
@@ -767,7 +767,7 @@ function renderSignup() {
       <div class="tagline">Create your account.</div>
       <div class="form-stack">
         <div class="field"><label>Name</label><input data-field="signup.name" value="${escapeHtml(f.name)}" placeholder="Your name" /></div>
-        <div class="field"><label>Email</label><input type="email" data-field="signup.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" /></div>
+        <div class="field"><label>Email</label><input type="email" dir="ltr" data-field="signup.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" /></div>
         <div class="field"><label>Password</label><input type="password" data-field="signup.password" value="${escapeHtml(f.password)}" placeholder="At least 8 characters" /></div>
       </div>
 
@@ -1327,7 +1327,7 @@ function renderInviteSheet() {
       </div>
 
       <input class="underline-input" style="margin-top:18px" data-field="invite.name" value="${escapeHtml(f.name)}" placeholder="Name" />
-      <input class="underline-input" style="margin-top:14px" type="email" data-field="invite.email" value="${escapeHtml(f.email)}" placeholder="Email" />
+      <input class="underline-input" style="margin-top:14px" type="email" dir="ltr" data-field="invite.email" value="${escapeHtml(f.email)}" placeholder="Email" />
 
       <div class="invite-role-row">
         <div class="detail-label">Joins as</div>
