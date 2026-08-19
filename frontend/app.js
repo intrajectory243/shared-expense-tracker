@@ -6,11 +6,56 @@ const EPS = 0.005;
 const PALETTE = ['avatar--sage', 'avatar--amber', 'avatar--blue'];
 const NUMBER_WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
 
+const LOCALE_TAGS = {
+  en: 'en-US',
+  fa: 'fa-IR-u-ca-persian-nu-arabext', // Jalali calendar + Persian digits, in one locale tag
+};
+
+const CURRENCY_META = {
+  toman: { mode: 'suffix', labelKey: 'currency.toman', nameKey: 'currency.name.toman' },
+  rial: { mode: 'suffix', labelKey: 'currency.rial', nameKey: 'currency.name.rial' },
+  usd: { mode: 'prefix', symbol: '$', nameKey: 'currency.name.usd' },
+  eur: { mode: 'prefix', symbol: '€', nameKey: 'currency.name.eur' },
+  aed: { mode: 'suffix', labelKey: 'currency.aed', nameKey: 'currency.name.aed' },
+};
+const CURRENCY_ORDER = ['toman', 'rial', 'usd', 'eur', 'aed'];
+
+// Own name in each language + a neutral English descriptor that stays
+// English regardless of UI language (matches the design mockup's picker).
+const LANG_OPTIONS = [
+  { code: 'en', native: 'English', descKey: 'lang.englishDesc', font: "'Instrument Sans',system-ui" },
+  { code: 'fa', native: 'فارسی', descKey: 'lang.persianDesc', font: "'Vazirmatn',sans-serif" },
+];
+
+// Display-only labels, keyed by the exact strings already stored on
+// existing expenses. CATS itself stays canonical English -- it's both the
+// API value and free-text data already on real rows, so it can't change.
+const CAT_LABELS = {
+  en: { Rent: 'Rent', Groceries: 'Groceries', Utilities: 'Utilities', Household: 'Household', 'Eating out': 'Eating out', Transport: 'Transport', Other: 'Other', Settled: 'Settled' },
+  fa: { Rent: 'اجاره', Groceries: 'خواروبار', Utilities: 'آب و برق', Household: 'خانه', 'Eating out': 'رستوران', Transport: 'حمل‌ونقل', Other: 'سایر', Settled: 'تسویه' },
+};
+
 function defaultSignupForm() {
-  return { name: '', email: '', password: '', mode: 'create', householdName: '', householdId: '', households: [], error: null, loading: false };
+  return { name: '', email: '', password: '', mode: 'create', householdName: '', householdId: '', currency: 'toman', households: [], error: null, loading: false };
+}
+
+// Device guess before login; the account's own saved preference (synced via
+// syncLangFromMe) always wins once we know who's signed in.
+function initLang() {
+  const saved = localStorage.getItem('halves_lang');
+  if (saved === 'en' || saved === 'fa') return saved;
+  const guess = (navigator.language || 'en').slice(0, 2).toLowerCase() === 'fa' ? 'fa' : 'en';
+  localStorage.setItem('halves_lang', guess);
+  return guess;
+}
+
+function syncLangFromMe() {
+  state.lang = state.me.language;
+  localStorage.setItem('halves_lang', state.lang);
 }
 
 const state = {
+  lang: initLang(),
   token: localStorage.getItem(TOKEN_KEY) || null,
   me: null,
   users: [],
@@ -40,12 +85,47 @@ const state = {
   editShares: { expenseId: null, amount: 0, draft: {} },
   editSharesSaving: false,
   pushEnabled: false,
+  draftCurrency: 'toman',
+  currencySaving: false,
 };
 
 // ---------- helpers ----------
 
 function fmt(n) {
-  return Math.round(n || 0).toLocaleString('en-US');
+  return Math.round(n || 0).toLocaleString(LOCALE_TAGS[state.lang] || 'en-US');
+}
+
+function money(n) {
+  const cur = CURRENCY_META[state.household ? state.household.currency : 'toman'];
+  const amt = fmt(n); // identical digits regardless of currency choice -- no conversion, ever
+  return cur.symbol ? `${cur.symbol}${amt}` : `${amt} ${t(cur.labelKey)}`;
+}
+
+// For two-part layouts (a big amount plus a smaller trailing unit label).
+// Prefix currencies (symbol) fold into the amount itself and leave no
+// separate unit; suffix currencies (toman/rial/AED) split as before.
+function moneyParts(n) {
+  const cur = CURRENCY_META[state.household ? state.household.currency : 'toman'];
+  const amt = fmt(n);
+  return cur.symbol ? { amount: `${cur.symbol}${amt}`, unit: '' } : { amount: amt, unit: t(cur.labelKey) };
+}
+
+function currencyUnitLabel() {
+  const cur = CURRENCY_META[state.household ? state.household.currency : 'toman'];
+  return cur.symbol || t(cur.labelKey);
+}
+
+// Sample formatting for a currency, independent of the household's actual
+// currency -- used by the currency picker to preview a choice before saving.
+function currencyPreviewText(code) {
+  const cur = CURRENCY_META[code];
+  const sample = code === 'rial' ? 12345670 : code === 'toman' ? 1234567 : 1235;
+  const amt = Math.round(sample).toLocaleString(LOCALE_TAGS[state.lang] || 'en-US');
+  return cur.symbol ? `${cur.symbol}${amt}` : `${amt} ${t(cur.labelKey)}`;
+}
+
+function catLabel(cat) {
+  return (CAT_LABELS[state.lang] || {})[cat] || cat;
 }
 
 function parseAmount(str) {
@@ -69,14 +149,15 @@ function avatarClass(userId, isMe) {
 }
 
 function householdLabel(count) {
-  if (count <= 1) return 'Just you';
+  if (count <= 1) return t('home.justYou');
+  if (state.lang !== 'en') return t('home.membersCount', { n: fmt(count) });
   const word = NUMBER_WORDS[count] || String(count);
   return `${word} of us`;
 }
 
 function nameOf(id) {
   const u = state.users.find((x) => x.id === id) || state.former.find((x) => x.id === id);
-  return u ? u.name : 'Someone';
+  return u ? u.name : t('common.someone');
 }
 
 function firstName(name) {
@@ -91,20 +172,20 @@ function netOf(userId) {
 
 function standingLabel(userId) {
   const n = netOf(userId);
-  if (Math.abs(n) <= EPS) return 'Square with the household.';
-  return n > 0 ? `Still owed ${fmt(n)} toman.` : `Still owes ${fmt(-n)} toman.`;
+  if (Math.abs(n) <= EPS) return t('standing.square');
+  return t(n > 0 ? 'standing.owed' : 'standing.owes', { amount: money(n > 0 ? n : -n) });
 }
 
 function formerStandingShort(m) {
   const n = netOf(m.id);
-  const tier = m.status === 'moved_out' ? 'moved out' : 'no access';
-  const bal = Math.abs(n) <= EPS ? 'square' : n > 0 ? `owed ${fmt(n)}` : `owes ${fmt(-n)}`;
+  const tier = t(m.status === 'moved_out' ? 'formerTier.movedOut' : 'formerTier.noAccess');
+  const bal = Math.abs(n) <= EPS ? t('formerStanding.square') : t(n > 0 ? 'formerStanding.owed' : 'formerStanding.owes', { amount: fmt(n > 0 ? n : -n) });
   return `${tier} · ${bal}`;
 }
 
 function monthLabel(isoDate) {
   const dt = new Date(isoDate + 'T00:00:00');
-  return dt.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+  return dt.toLocaleString(LOCALE_TAGS[state.lang] || 'en-US', { month: 'long', year: 'numeric' });
 }
 
 function dayOfMonth(isoDate) {
@@ -182,6 +263,7 @@ async function boot() {
   if (!state.token) { state.route = 'login'; return render(); }
   try {
     state.me = await api('/auth/me');
+    syncLangFromMe();
     await afterAuth();
   } catch (e) {
     state.token = null;
@@ -202,7 +284,7 @@ async function bootAcceptInvite(token) {
     state.acceptInvite.householdName = preview.household_name;
     state.acceptInvite.loaded = true;
   } catch (e) {
-    state.acceptInvite.error = e.message || 'This invite link is no longer valid.';
+    state.acceptInvite.error = e.message || t('error.invalidInvite');
   }
   render();
 }
@@ -218,7 +300,7 @@ async function afterAuth() {
 
 async function doLogin() {
   const { email, password } = state.loginForm;
-  if (!email || !password) { state.loginForm.error = 'Enter your email and password.'; return render(); }
+  if (!email || !password) { state.loginForm.error = t('error.enterEmailPassword'); return render(); }
   state.loginForm.loading = true;
   state.loginForm.error = null;
   render();
@@ -227,11 +309,12 @@ async function doLogin() {
     state.token = tok.access_token;
     localStorage.setItem(TOKEN_KEY, state.token);
     state.me = await api('/auth/me');
+    syncLangFromMe();
     state.loginForm = { email: '', password: '', error: null, loading: false };
     await afterAuth();
   } catch (e) {
     state.loginForm.loading = false;
-    state.loginForm.error = e.message || 'Could not sign in.';
+    state.loginForm.error = e.message || t('error.couldNotSignIn');
     render();
   }
 }
@@ -247,27 +330,28 @@ async function openSignup() {
 
 async function doSignup() {
   const f = state.signupForm;
-  if (!f.name || !f.email || !f.password) { f.error = 'Fill in your name, email, and password.'; return render(); }
-  if (f.password.length < 8) { f.error = 'Password needs at least 8 characters.'; return render(); }
-  if (f.mode === 'create' && !f.householdName) { f.error = 'Name your household.'; return render(); }
-  if (f.mode === 'join' && !f.householdId) { f.error = 'Pick a household to join.'; return render(); }
+  if (!f.name || !f.email || !f.password) { f.error = t('error.fillNameEmailPassword'); return render(); }
+  if (f.password.length < 8) { f.error = t('error.passwordMin8'); return render(); }
+  if (f.mode === 'create' && !f.householdName) { f.error = t('error.nameHousehold'); return render(); }
+  if (f.mode === 'join' && !f.householdId) { f.error = t('error.pickHousehold'); return render(); }
   f.loading = true;
   f.error = null;
   render();
   try {
-    const payload = { name: f.name, email: f.email, password: f.password };
-    if (f.mode === 'create') payload.household_name = f.householdName;
+    const payload = { name: f.name, email: f.email, password: f.password, language: state.lang };
+    if (f.mode === 'create') { payload.household_name = f.householdName; payload.household_currency = f.currency; }
     else payload.household_id = Number(f.householdId);
     await api('/auth/signup', { method: 'POST', auth: false, body: payload });
     const tok = await api('/auth/login', { method: 'POST', auth: false, form: { username: f.email, password: f.password } });
     state.token = tok.access_token;
     localStorage.setItem(TOKEN_KEY, state.token);
     state.me = await api('/auth/me');
+    syncLangFromMe();
     state.signupForm = defaultSignupForm();
     await afterAuth();
   } catch (e) {
     f.loading = false;
-    f.error = e.message || 'Could not create your account.';
+    f.error = e.message || t('error.couldNotCreateAccount');
     render();
   }
 }
@@ -310,7 +394,7 @@ async function refreshPushState() {
 
 async function toggleNotifications() {
   if (!pushSupported()) {
-    flash('Notifications aren’t supported in this browser.');
+    flash(t('toast.notificationsUnsupported'));
     return;
   }
   try {
@@ -321,13 +405,13 @@ async function toggleNotifications() {
       await existing.unsubscribe();
       await api('/push/unsubscribe', { method: 'POST', body: { endpoint: existing.endpoint } });
       state.pushEnabled = false;
-      flash('Notifications turned off');
+      flash(t('toast.notificationsOff'));
       return render();
     }
 
     const permission = await Notification.requestPermission();
     if (permission !== 'granted') {
-      flash(permission === 'denied' ? 'Notifications are blocked for this site.' : 'Notifications need permission to turn on.');
+      flash(t(permission === 'denied' ? 'toast.notificationsBlocked' : 'toast.notificationsNeedPermission'));
       return render();
     }
 
@@ -338,9 +422,9 @@ async function toggleNotifications() {
     });
     await api('/push/subscribe', { method: 'POST', body: sub.toJSON() });
     state.pushEnabled = true;
-    flash('Notifications turned on');
+    flash(t('toast.notificationsOn'));
   } catch (e) {
-    flash(e.message || 'Could not update notifications.');
+    flash(e.message || t('toast.couldNotUpdateNotifications'));
   }
   render();
 }
@@ -366,7 +450,7 @@ async function loadHome() {
     await refreshData();
     state.route = 'home';
   } catch (e) {
-    flash(e.message || 'Could not load your household.');
+    flash(e.message || t('toast.couldNotLoadHousehold'));
   }
   render();
 }
@@ -378,7 +462,7 @@ async function goHousehold() {
   try {
     await refreshData();
   } catch (e) {
-    flash(e.message || 'Could not refresh the household.');
+    flash(e.message || t('toast.couldNotRefreshHousehold'));
   }
   render();
 }
@@ -395,9 +479,10 @@ async function approveRequest(userId) {
   try {
     await api(`/users/${userId}/approve`, { method: 'PATCH', body: { role } });
     await refreshData();
-    flash(`Approved · ${person ? person.name.split(' ')[0] : 'They'}${role === 'admin' ? ' is in as admin' : ' is in'}`);
+    const name = person ? person.name.split(' ')[0] : t('common.someone');
+    flash(t(role === 'admin' ? 'toast.approvedAsAdmin' : 'toast.approvedAsMember', { name }));
   } catch (e) {
-    flash(e.message || 'Could not approve.');
+    flash(e.message || t('toast.couldNotApprove'));
   }
   render();
 }
@@ -407,9 +492,9 @@ async function declineRequest(userId) {
   try {
     await api(`/users/${userId}`, { method: 'DELETE' });
     await refreshData();
-    flash(`Declined${person ? ' · ' + firstName(person.name) + ' won’t get in' : ''}`);
+    flash(person ? t('toast.declined', { name: firstName(person.name) }) : t('toast.declinedGeneric'));
   } catch (e) {
-    flash(e.message || 'Could not decline.');
+    flash(e.message || t('toast.couldNotDecline'));
   }
   render();
 }
@@ -436,9 +521,9 @@ async function pickMemberRole(role) {
   try {
     await api(`/users/${selected.id}`, { method: 'PATCH', body: { role } });
     await refreshData();
-    flash(`${firstName(selected.name)} is now ${role === 'admin' ? 'an admin' : 'a member'}`);
+    flash(t(role === 'admin' ? 'toast.roleChangedAdmin' : 'toast.roleChangedMember', { name: firstName(selected.name) }));
   } catch (e) {
-    flash(e.message || 'Could not change their role.');
+    flash(e.message || t('toast.couldNotChangeRole'));
   }
   render();
 }
@@ -447,7 +532,7 @@ async function runAccessAction(to, blocked) {
   const selected = findMember(state.selectedMemberId);
   if (!selected) return;
   if (blocked) {
-    flash(selected.id === state.me.id ? 'Ask another admin to change your own access.' : 'A household needs at least one admin.');
+    flash(t(selected.id === state.me.id ? 'toast.askAnotherAdmin' : 'toast.needOneAdmin'));
     return;
   }
   try {
@@ -455,9 +540,44 @@ async function runAccessAction(to, blocked) {
     await refreshData();
     const who = firstName(selected.name);
     state.sheet = null;
-    flash(to === 'approved' ? `${who} is back in` : to === 'moved_out' ? `${who} moved out · history and balance stay` : `${who} can no longer sign in`);
+    flash(t(to === 'approved' ? 'toast.backIn' : to === 'moved_out' ? 'toast.movedOutHistory' : 'toast.noLongerSignIn', { name: who }));
   } catch (e) {
-    flash(e.message || 'Could not update their access.');
+    flash(e.message || t('toast.couldNotUpdateAccess'));
+  }
+  render();
+}
+
+// ---------- language + currency ----------
+
+function pickLanguage(code) {
+  state.sheet = null;
+  state.lang = code;
+  localStorage.setItem('halves_lang', code);
+  render();
+  flash(t(code === 'en' ? 'toast.langEn' : 'toast.langFa'));
+  if (state.me) api('/users/me/language', { method: 'PATCH', body: { language: code } }).catch(() => {});
+}
+
+function openCurrencySheet() {
+  state.draftCurrency = state.household ? state.household.currency : 'toman';
+  state.currencySaving = false;
+  state.sheet = 'currency';
+  render();
+}
+
+async function saveCurrency() {
+  const code = state.draftCurrency;
+  state.currencySaving = true;
+  render();
+  try {
+    await api(`/households/${state.me.household_id}`, { method: 'PATCH', body: { currency: code } });
+    await refreshData();
+    state.sheet = null;
+    state.currencySaving = false;
+    flash(t('toast.currencySet', { name: t(CURRENCY_META[code].nameKey) }));
+  } catch (e) {
+    state.currencySaving = false;
+    flash(e.message || t('toast.couldNotUpdateCurrency'));
   }
   render();
 }
@@ -473,7 +593,7 @@ function openRenameSheet() {
 
 async function saveRename() {
   const name = (state.renameDraft || '').trim();
-  if (!name) return flash('Give the household a name.');
+  if (!name) return flash(t('toast.giveHouseholdName'));
   state.renameSaving = true;
   render();
   try {
@@ -481,10 +601,10 @@ async function saveRename() {
     await refreshData();
     state.sheet = null;
     state.renameSaving = false;
-    flash(`Renamed · ${name}`);
+    flash(t('toast.renamed', { name }));
   } catch (e) {
     state.renameSaving = false;
-    flash(e.message || 'Could not rename the household.');
+    flash(e.message || t('toast.couldNotRename'));
     render();
   }
 }
@@ -502,7 +622,7 @@ async function sendInvite() {
   const f = state.inviteForm;
   const name = (f.name || '').trim();
   const email = (f.email || '').trim();
-  if (!name || !email) return flash('Name and email, then create the link.');
+  if (!name || !email) return flash(t('toast.nameAndEmail'));
   state.inviteSaving = true;
   render();
   try {
@@ -512,10 +632,10 @@ async function sendInvite() {
     state.inviteSaving = false;
     const link = `${location.origin}${location.pathname}?invite=${res.invite_token}`;
     try { await navigator.clipboard.writeText(link); } catch (e) { /* clipboard may be unavailable; link is still valid to share manually */ }
-    flash(`Invited · link copied for ${firstName(name)}`);
+    flash(t('toast.invited', { name: firstName(name) }));
   } catch (e) {
     state.inviteSaving = false;
-    flash(e.message || 'Could not create the invite.');
+    flash(e.message || t('toast.couldNotInvite'));
     render();
   }
 }
@@ -524,7 +644,7 @@ async function sendInvite() {
 
 async function submitAcceptInvite() {
   const ai = state.acceptInvite;
-  if (!ai.password || ai.password.length < 8) { ai.error = 'Password needs at least 8 characters.'; return render(); }
+  if (!ai.password || ai.password.length < 8) { ai.error = t('error.passwordMin8'); return render(); }
   ai.loading = true;
   ai.error = null;
   render();
@@ -534,11 +654,12 @@ async function submitAcceptInvite() {
     state.token = tok.access_token;
     localStorage.setItem(TOKEN_KEY, state.token);
     state.me = await api('/auth/me');
+    syncLangFromMe();
     history.replaceState(null, '', location.pathname);
     await afterAuth();
   } catch (e) {
     ai.loading = false;
-    ai.error = e.message || 'Could not join.';
+    ai.error = e.message || t('error.couldNotJoin');
     render();
   }
 }
@@ -572,8 +693,8 @@ function cyclePayer() {
 async function saveExpense() {
   const d = state.draft;
   const amount = parseAmount(d.amount);
-  if (!amount) return flash('Enter an amount.');
-  if (!d.participantIds.length) return flash('Tag at least one person.');
+  if (!amount) return flash(t('toast.enterAmount'));
+  if (!d.participantIds.length) return flash(t('toast.tagAtLeastOne'));
   state.draftSaving = true;
   render();
   try {
@@ -581,7 +702,7 @@ async function saveExpense() {
       method: 'POST',
       body: {
         amount,
-        description: d.desc || d.category || 'Expense',
+        description: d.desc || d.category || t('addSheet.fallbackDesc'),
         category: d.category || 'general',
         participant_ids: d.participantIds,
         payer_id: d.payerId,
@@ -590,10 +711,10 @@ async function saveExpense() {
     state.sheet = null;
     state.draftSaving = false;
     await refreshData();
-    flash(`Saved · ${fmt(amount)} toman`);
+    flash(t('toast.savedExpense', { amount: money(amount) }));
   } catch (e) {
     state.draftSaving = false;
-    flash(e.message || 'Could not save the expense.');
+    flash(e.message || t('toast.couldNotSaveExpense'));
     render();
   }
 }
@@ -627,7 +748,7 @@ function bumpShare(userId, delta) {
 async function saveShares() {
   const es = state.editShares;
   const entries = Object.entries(es.draft);
-  if (!entries.length) return flash('Tag at least one person.');
+  if (!entries.length) return flash(t('toast.tagAtLeastOne'));
   state.editSharesSaving = true;
   render();
   try {
@@ -638,10 +759,10 @@ async function saveShares() {
     state.sheet = null;
     state.editSharesSaving = false;
     await refreshData();
-    flash('Split updated');
+    flash(t('toast.splitUpdated'));
   } catch (e) {
     state.editSharesSaving = false;
-    flash(e.message || 'Could not update the split.');
+    flash(e.message || t('toast.couldNotUpdateSplit'));
     render();
   }
 }
@@ -665,23 +786,23 @@ function pickCounterparty(otherId) {
 }
 
 async function confirmSettle() {
-  const t = getSettleTarget();
+  const target = getSettleTarget();
   const amount = parseAmount(state.settleDraft.amount);
-  if (!t || !amount) return flash('Pick a person and an amount.');
+  if (!target || !amount) return flash(t('toast.pickPersonAmount'));
   state.settleSaving = true;
   render();
   try {
-    const payload = t.iOwe
-      ? { from_user_id: state.me.id, to_user_id: t.debt.to_user_id, amount }
-      : { from_user_id: t.debt.from_user_id, to_user_id: state.me.id, amount };
+    const payload = target.iOwe
+      ? { from_user_id: state.me.id, to_user_id: target.debt.to_user_id, amount }
+      : { from_user_id: target.debt.from_user_id, to_user_id: state.me.id, amount };
     await api('/settlements', { method: 'POST', body: payload });
     state.sheet = null;
     state.settleSaving = false;
     await refreshData();
-    flash(`Logged · ${fmt(amount)} toman repaid`);
+    flash(t('toast.logged', { amount: money(amount) }));
   } catch (e) {
     state.settleSaving = false;
-    flash(e.message || 'Could not log the settlement.');
+    flash(e.message || t('toast.couldNotLogSettlement'));
     render();
   }
 }
@@ -694,12 +815,12 @@ function buildHistoryGroups() {
     rows.push({
       kind: 'expense', id: e.id, sortKey: e.date, month: monthLabel(e.date), day: dayOfMonth(e.date),
       desc: e.description, cat: e.category, amount: e.amount,
-      payerLabel: `${e.payer.name} paid`,
+      payerLabel: t('history.paidBy', { name: e.payer.name }),
       // Most expenses are logged by the payer themselves -- only call out
       // who actually entered it when that's not the case, to avoid clutter.
-      loggedByLabel: e.created_by.id !== e.payer.id ? `logged by ${e.created_by.name}` : null,
+      loggedByLabel: e.created_by.id !== e.payer.id ? t('history.loggedBy', { name: e.created_by.name }) : null,
       parts: e.participants.map((p) => initials(p.name)),
-      shareLabel: e.participants.length > 1 ? `split ${e.participants.length} ways` : `all ${e.participants[0] ? e.participants[0].name : ''}`,
+      shareLabel: e.participants.length > 1 ? t('history.splitWays', { n: fmt(e.participants.length) }) : t('history.allName', { name: e.participants[0] ? e.participants[0].name : '' }),
       titleColor: 'var(--ink)', tagClass: 'tag',
     });
   }
@@ -708,11 +829,11 @@ function buildHistoryGroups() {
     const toName = nameOf(s.to_user_id);
     rows.push({
       kind: 'settle', sortKey: s.date, month: monthLabel(s.date), day: dayOfMonth(s.date),
-      desc: `${fromName} paid ${toName}`, cat: 'Settled', amount: s.amount,
-      payerLabel: 'repayment',
+      desc: t('history.settlementDesc', { from: fromName, to: toName }), cat: 'Settled', amount: s.amount,
+      payerLabel: t('history.repayment'),
       loggedByLabel: null,
       parts: [initials(fromName), initials(toName)],
-      shareLabel: 'balance reduced',
+      shareLabel: t('history.balanceReduced'),
       titleColor: 'var(--sage-soft-text)', tagClass: 'tag tag--settled',
     });
   }
@@ -724,14 +845,14 @@ function buildHistoryGroups() {
   }
   return [...map.entries()].map(([month, items]) => ({
     month, items,
-    total: fmt(items.filter((i) => i.kind === 'expense').reduce((a, b) => a + b.amount, 0)) + ' spent',
+    total: t('history.spent', { amount: fmt(items.filter((i) => i.kind === 'expense').reduce((a, b) => a + b.amount, 0)) }),
   }));
 }
 
 // ---------- render: screens ----------
 
 function renderLoading() {
-  return `<div class="loading-screen">Loading…</div>`;
+  return `<div class="loading-screen">${t('common.loading')}</div>`;
 }
 
 function renderLogin() {
@@ -739,21 +860,21 @@ function renderLogin() {
   return `
     <div class="screen screen--auth">
       <div class="brand">Halves</div>
-      <div class="tagline">One running total for the household.</div>
+      <div class="tagline">${t('login.tagline')}</div>
       <div class="form-stack">
         <div class="field">
-          <label>Email</label>
-          <input type="email" dir="ltr" data-field="login.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" autocomplete="username" />
+          <label>${t('login.labelEmail')}</label>
+          <input type="text" inputmode="email" autocapitalize="off" spellcheck="false" dir="ltr" data-field="login.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" autocomplete="username" />
         </div>
         <div class="field">
-          <label>Password</label>
+          <label>${t('login.labelPassword')}</label>
           <input type="password" data-field="login.password" value="${escapeHtml(f.password)}" placeholder="••••••••" autocomplete="current-password" />
         </div>
       </div>
       ${f.error ? `<div class="error-row"><div class="error-dot"></div><div class="error-text">${escapeHtml(f.error)}</div></div>` : ''}
-      <button class="btn-primary" style="margin-top:26px" data-action="login.submit" ${f.loading ? 'disabled' : ''}>${f.loading ? 'Signing in…' : 'Sign in'}</button>
+      <button class="btn-primary" style="margin-top:26px" data-action="login.submit" ${f.loading ? 'disabled' : ''}>${f.loading ? t('login.signingIn') : t('login.signIn')}</button>
       <div class="link-row">
-        <button data-action="signup.open">Create an account</button>
+        <button data-action="signup.open">${t('login.createAccount')}</button>
       </div>
     </div>
   `;
@@ -761,69 +882,93 @@ function renderLogin() {
 
 function renderSignup() {
   const f = state.signupForm;
+  const isCreate = f.mode === 'create';
   return `
     <div class="screen screen--auth">
       <div class="brand">Halves</div>
-      <div class="tagline">Create your account.</div>
+      <div class="tagline">${t(isCreate ? 'signup.taglineCreate' : 'signup.taglineJoin')}</div>
       <div class="form-stack">
-        <div class="field"><label>Name</label><input data-field="signup.name" value="${escapeHtml(f.name)}" placeholder="Your name" /></div>
-        <div class="field"><label>Email</label><input type="email" dir="ltr" data-field="signup.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" /></div>
-        <div class="field"><label>Password</label><input type="password" data-field="signup.password" value="${escapeHtml(f.password)}" placeholder="At least 8 characters" /></div>
+        <div class="field"><label>${t('signup.labelName')}</label><input data-field="signup.name" value="${escapeHtml(f.name)}" placeholder="${t('signup.labelName')}" /></div>
+        <div class="field"><label>${t('signup.labelEmail')}</label><input type="text" inputmode="email" autocapitalize="off" spellcheck="false" dir="ltr" data-field="signup.email" value="${escapeHtml(f.email)}" placeholder="you@example.com" /></div>
+        <div class="field"><label>${t('signup.labelPassword')}</label><input type="password" data-field="signup.password" value="${escapeHtml(f.password)}" placeholder="${t('signup.passwordHint')}" /></div>
       </div>
 
       <div class="tabs-row">
-        <button class="tab-btn ${f.mode === 'create' ? 'tab-btn--active' : ''}" data-action="signup.modeCreate">New household</button>
-        <button class="tab-btn ${f.mode === 'join' ? 'tab-btn--active' : ''}" data-action="signup.modeJoin">Join existing</button>
+        <button class="tab-btn ${isCreate ? 'tab-btn--active' : ''}" data-action="signup.modeCreate">${t('signup.tabCreate')}</button>
+        <button class="tab-btn ${!isCreate ? 'tab-btn--active' : ''}" data-action="signup.modeJoin">${t('signup.tabJoin')}</button>
       </div>
 
-      ${f.mode === 'create' ? `
+      ${isCreate ? `
         <div class="field" style="margin-top:10px">
-          <label>Household name</label>
-          <input data-field="signup.householdName" value="${escapeHtml(f.householdName)}" placeholder="e.g. The Flat" />
+          <label>${t('signup.labelHouseholdName')}</label>
+          <input data-field="signup.householdName" value="${escapeHtml(f.householdName)}" placeholder="${t('signup.labelHouseholdName')}" />
         </div>
       ` : `
         <div class="field" style="margin-top:10px">
-          <label>Household</label>
+          <label>${t('signup.labelHouseholdSelect')}</label>
           <select data-field="signup.householdId">
-            <option value="">Choose one…</option>
+            <option value="">${t('signup.choosePlaceholder')}</option>
             ${f.households.map((h) => `<option value="${h.id}" ${String(h.id) === String(f.householdId) ? 'selected' : ''}>${escapeHtml(h.name)}</option>`).join('')}
           </select>
         </div>
       `}
 
+      <div style="margin-top:22px;padding-top:14px;border-top:1px solid var(--border)">
+        <div class="eyebrow">${t('signup.languageTitle')}</div>
+        <div class="chip-row" style="margin-top:10px">
+          ${LANG_OPTIONS.map((l) => `<button class="chip ${state.lang === l.code ? 'chip--active' : ''}" style="font-family:${l.font}" data-action="signup.pickLang" data-lang="${l.code}">${l.native}</button>`).join('')}
+        </div>
+      </div>
+
+      ${isCreate ? `
+        <div style="margin-top:20px;padding-top:14px;border-top:1px solid var(--border)">
+          <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px">
+            <div class="eyebrow">${t('signup.currencyTitle')}</div>
+            <div style="font-size:12px" class="faint">${t('signup.currencyDisplayOnly')}</div>
+          </div>
+          <div class="chip-row" style="margin-top:10px">
+            ${CURRENCY_ORDER.map((code) => `<button class="chip ${f.currency === code ? 'chip--active' : ''}" data-action="signup.pickCurrency" data-currency="${code}">${t(CURRENCY_META[code].nameKey)}</button>`).join('')}
+          </div>
+          <div style="margin-top:14px;display:flex;align-items:baseline;justify-content:space-between;gap:10px;background:var(--card);border:1px solid var(--border-soft);border-radius:14px;padding:12px 15px">
+            <div style="font-size:12.5px" class="faint">${t('signup.amountsWillRead')}</div>
+            <div class="tabular" style="font-family:var(--font-serif);font-size:21px">${currencyPreviewText(f.currency)}</div>
+          </div>
+          <div style="margin-top:9px;font-size:12.5px;line-height:1.5" class="faint">${t('signup.currencyFootnote')}</div>
+        </div>
+      ` : ''}
+
       ${f.error ? `<div class="error-row"><div class="error-dot"></div><div class="error-text">${escapeHtml(f.error)}</div></div>` : ''}
 
-      <button class="btn-primary" style="margin-top:22px" data-action="signup.submit" ${f.loading ? 'disabled' : ''}>${f.loading ? 'Creating…' : 'Create account'}</button>
-      <div class="link-row"><button data-action="signup.toLogin">Back to sign in</button></div>
+      <button class="btn-primary" style="margin-top:22px" data-action="signup.submit" ${f.loading ? 'disabled' : ''}>${f.loading ? t(isCreate ? 'signup.submitCreating' : 'signup.submitJoining') : t(isCreate ? 'signup.submitCreate' : 'signup.submitJoin')}</button>
+      <div class="link-row"><button data-action="signup.toLogin">${t('signup.backToSignIn')}</button></div>
     </div>
   `;
 }
 
 function renderPending() {
-  const title = state.noHousehold ? 'No household yet.' : 'Waiting on your household admin.';
-  const copy = state.noHousehold
-    ? 'Your account doesn’t belong to a household. Sign in again after an admin sorts you into one.'
-    : 'Your account is created. The household admin approves new members — sign in again once it’s done.';
+  const title = t(state.noHousehold ? 'pending.titleNoHousehold' : 'pending.titleWaiting');
+  const copy = t(state.noHousehold ? 'pending.copyNoHousehold' : 'pending.copyWaiting');
   return `
     <div class="screen screen--auth">
       <div class="brand">Halves</div>
       <div class="pending-dot-ring"><div class="pending-dot"></div></div>
       <div class="pending-title">${escapeHtml(title)}</div>
       <div class="pending-copy">${escapeHtml(copy)}</div>
-      <button class="btn-secondary" style="margin-top:auto" data-action="logout">Back to sign in</button>
+      <button class="btn-secondary" style="margin-top:auto" data-action="logout">${t('common.backToSignIn')}</button>
     </div>
   `;
 }
 
 function renderHome() {
   const { net, square, owed, debts } = computeBalanceView();
+  const balanceParts = moneyParts(Math.abs(net));
   const isEmpty = state.expenses.length === 0;
   const showSettle = !square && debts.length > 0;
   const recent = state.expenses.slice(0, 3);
   const stackUsers = state.users.slice(0, 4);
   const isMovedOut = state.me.status === 'moved_out';
   const householdName = state.household ? state.household.name : 'this household';
-  const topLabel = isMovedOut ? `${escapeHtml(householdName)} · past flat` : householdLabel(state.users.length);
+  const topLabel = isMovedOut ? t('home.pastFlat', { name: escapeHtml(householdName) }) : householdLabel(state.users.length);
 
   return `
     <div class="screen">
@@ -835,7 +980,7 @@ function renderHome() {
           <div class="household-label">${topLabel}</div>
         </div>
         <div class="icon-btn-wrap">
-          <button class="icon-btn" data-action="menu.open" title="Menu">
+          <button class="icon-btn" data-action="menu.open" title="${t('home.menuTitle')}">
             <div class="dot"></div><div class="dot"></div><div class="dot"></div>
           </button>
           ${state.me.role === 'admin' && state.pending.length > 0 ? `<div class="badge-count">${state.pending.length}</div>` : ''}
@@ -843,17 +988,17 @@ function renderHome() {
       </div>
 
       <div class="balance-block">
-        <div class="eyebrow">${isEmpty ? 'Nothing to split yet' : square ? 'All square' : owed ? 'You’re owed' : 'You owe'}</div>
+        <div class="eyebrow">${t(isEmpty ? 'home.eyebrowEmpty' : square ? 'home.eyebrowSquare' : owed ? 'home.eyebrowOwed' : 'home.eyebrowOwe')}</div>
         <div class="balance-amount-row">
-          <div class="balance-amount tabular">${fmt(Math.abs(net))}</div>
-          <div class="balance-unit">toman</div>
+          <div class="balance-amount tabular">${balanceParts.amount}</div>
+          ${balanceParts.unit ? `<div class="balance-unit">${balanceParts.unit}</div>` : ''}
         </div>
         <div class="balance-sub">${
           isEmpty
-            ? 'Add your first shared cost and the balance appears here.'
+            ? t('home.subEmpty')
             : square
-              ? 'Every expense and repayment is accounted for. Nothing owed in either direction.'
-              : `Your net position across ${state.expenses.length} expense${state.expenses.length === 1 ? '' : 's'}.`
+              ? t('home.subSquare')
+              : t(state.expenses.length === 1 ? 'home.subPositionOne' : 'home.subPositionMany', { n: fmt(state.expenses.length) })
         }</div>
       </div>
 
@@ -864,7 +1009,7 @@ function renderHome() {
             const otherName = iAmFrom ? d.to_name : d.from_name;
             return `<div class="debt-row">
               <div class="avatar avatar--muted avatar-sm">${initials(otherName)}</div>
-              <div class="debt-line">${iAmFrom ? `You pay ${escapeHtml(otherName)}` : `${escapeHtml(otherName)} pays you`}</div>
+              <div class="debt-line">${t(iAmFrom ? 'home.debtLinePay' : 'home.debtLinePayback', { name: escapeHtml(otherName) })}</div>
               <div class="debt-amount tabular">${fmt(d.amount)}</div>
             </div>`;
           }).join('')}
@@ -873,29 +1018,29 @@ function renderHome() {
 
       ${!isMovedOut ? `
         <button class="btn-primary" style="margin-top:34px;display:flex;align-items:center;justify-content:center;gap:10px" data-action="openAdd">
-          <span style="font-size:20px;line-height:1">+</span><span>Add expense</span>
+          <span style="font-size:20px;line-height:1">+</span><span>${t('home.addExpense')}</span>
         </button>
       ` : `
         <div class="restricted-card">
-          <div class="eyebrow">Moved out</div>
-          <p>You’re no longer in ${escapeHtml(householdName)}. You can settle what’s outstanding and look back through history — logging new expenses is off.</p>
+          <div class="eyebrow">${t('home.movedOutEyebrow')}</div>
+          <p>${t('home.movedOutBody', { household: escapeHtml(householdName) })}</p>
         </div>
       `}
 
-      ${showSettle ? `<button class="btn-secondary" style="margin-top:10px" data-action="openSettle">Settle up</button>` : ''}
+      ${showSettle ? `<button class="btn-secondary" style="margin-top:10px" data-action="openSettle">${t('common.settleUp')}</button>` : ''}
 
       ${!isEmpty ? `
         <div style="margin-top:40px">
           <div class="section-head">
-            <div class="eyebrow">Recent</div>
-            <a href="#" data-action="toHistory" style="font-size:13.5px;color:var(--sage-soft-text);text-decoration:none">All ${state.expenses.length} expenses</a>
+            <div class="eyebrow">${t('home.recent')}</div>
+            <a href="#" data-action="toHistory" style="font-size:13.5px;color:var(--sage-soft-text);text-decoration:none">${t('common.allExpenses', { n: fmt(state.expenses.length) })}</a>
           </div>
           <div class="recent-card">
             ${recent.map((e) => `
               <div class="recent-row">
                 <div style="flex:1;min-width:0">
                   <div class="recent-desc">${escapeHtml(e.description)}</div>
-                  <div class="recent-meta">${escapeHtml(e.payer.name)} paid · ${escapeHtml(e.category)} · ${e.participants.length > 1 ? 'split ' + e.participants.length : 'all ' + escapeHtml(e.participants[0] ? e.participants[0].name : '')}</div>
+                  <div class="recent-meta">${t(e.participants.length > 1 ? 'home.recentMetaSplit' : 'home.recentMetaAll', { payer: escapeHtml(e.payer.name), cat: escapeHtml(catLabel(e.category)), n: fmt(e.participants.length), name: escapeHtml(e.participants[0] ? e.participants[0].name : '') })}</div>
                 </div>
                 <div class="recent-amount tabular">${fmt(e.amount)}</div>
               </div>
@@ -904,8 +1049,8 @@ function renderHome() {
         </div>
       ` : `
         <div class="empty-state">
-          <h3>Nothing logged yet</h3>
-          <p>The first expense any of you adds shows up here.</p>
+          <h3>${t('home.emptyTitle')}</h3>
+          <p>${t('home.emptyBody')}</p>
         </div>
       `}
     </div>
@@ -922,17 +1067,17 @@ function renderHistory() {
     <div class="screen">
       <div class="topbar">
         <button class="icon-btn" data-action="toHome"><div class="chevron"></div></button>
-        <div class="eyebrow">All ${state.expenses.length} expenses</div>
+        <div class="eyebrow">${t('common.allExpenses', { n: fmt(state.expenses.length) })}</div>
       </div>
       <div style="margin-top:26px;display:flex;align-items:flex-end;justify-content:space-between;gap:14px">
         <div>
-          <div style="font-family:var(--font-serif);font-size:32px;line-height:1.1">History</div>
-          <div style="margin-top:7px;font-size:13.5px" class="muted">${square ? 'All square' : owed ? 'You’re owed' : 'You owe'} <span class="tabular" style="color:var(--ink)">${fmt(Math.abs(net))}</span></div>
+          <div style="font-family:var(--font-serif);font-size:32px;line-height:1.1">${t('history.title')}</div>
+          <div style="margin-top:7px;font-size:13.5px" class="muted">${t(square ? 'home.eyebrowSquare' : owed ? 'home.eyebrowOwed' : 'home.eyebrowOwe')} <span class="tabular" style="color:var(--ink)">${fmt(Math.abs(net))}</span></div>
         </div>
-        ${showSettle ? `<button class="btn-pill-sage" data-action="openSettle">Settle up</button>` : ''}
+        ${showSettle ? `<button class="btn-pill-sage" data-action="openSettle">${t('common.settleUp')}</button>` : ''}
       </div>
 
-      ${isEmpty ? `<div class="empty-state" style="margin-top:36px"><p style="margin:0">No expenses yet.<br />Add one and it lands here.</p></div>` : ''}
+      ${isEmpty ? `<div class="empty-state" style="margin-top:36px"><p style="margin:0">${t('history.emptyLine1')}<br />${t('history.emptyLine2')}</p></div>` : ''}
 
       ${groups.map((g) => `
         <div class="month-group">
@@ -950,7 +1095,7 @@ function renderHistory() {
                   <div class="history-amount tabular" style="color:${e.titleColor}">${fmt(e.amount)}</div>
                 </div>
                 <div class="history-tags">
-                  <span class="${e.tagClass}">${escapeHtml(e.cat)}</span>
+                  <span class="${e.tagClass}">${escapeHtml(catLabel(e.cat))}</span>
                   <span class="payer-label">${escapeHtml(e.payerLabel)}</span>
                   <span class="parts-row">${e.parts.map((p) => `<span class="avatar avatar-xs">${p}</span>`).join('')}</span>
                   <span class="share-label">${escapeHtml(e.shareLabel)}</span>
@@ -972,12 +1117,12 @@ function renderAddSheet() {
   const d = state.draft;
   const amt = parseAmount(d.amount);
   const splitHint = d.participantIds.length === 0
-    ? 'tag at least one person'
+    ? t('addSheet.hintNone')
     : !amt
-      ? `${d.participantIds.length} tagged`
+      ? t('addSheet.hintTagged', { n: fmt(d.participantIds.length) })
       : d.participantIds.length === 1
-        ? `${nameOf(d.participantIds[0])} carries all of it`
-        : `${fmt(amt / d.participantIds.length)} each`;
+        ? t('addSheet.hintCarriesAll', { name: nameOf(d.participantIds[0]) })
+        : t('addSheet.hintEach', { amount: fmt(amt / d.participantIds.length) });
   const payer = state.users.find((u) => u.id === d.payerId) || state.me;
 
   return `
@@ -985,24 +1130,24 @@ function renderAddSheet() {
     <div class="sheet-panel">
       <div class="sheet-handle"></div>
       <div class="sheet-head">
-        <div class="sheet-title">New expense</div>
-        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+        <div class="sheet-title">${t('addSheet.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.cancel')}</button>
       </div>
 
       <div class="amount-row">
         <input class="amount-input tabular" inputmode="numeric" data-field="draft.amount" value="${escapeHtml(d.amount)}" placeholder="0" />
-        <div class="amount-unit">toman</div>
+        <div class="amount-unit">${currencyUnitLabel()}</div>
       </div>
       <div class="amount-rule"></div>
 
-      <input class="desc-input" data-field="draft.desc" value="${escapeHtml(d.desc)}" placeholder="What was it for?" />
+      <input class="desc-input" data-field="draft.desc" value="${escapeHtml(d.desc)}" placeholder="${t('addSheet.descPlaceholder')}" />
 
       <div class="chip-row" style="margin-top:16px">
-        ${CATS.map((c) => `<button class="chip ${d.category === c ? 'chip--active' : ''}" data-action="draft.pickCategory" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>`).join('')}
+        ${CATS.map((c) => `<button class="chip ${d.category === c ? 'chip--active' : ''}" data-action="draft.pickCategory" data-cat="${escapeHtml(c)}">${escapeHtml(catLabel(c))}</button>`).join('')}
       </div>
 
       <div class="split-block">
-        <div class="split-head"><div style="font-size:14.5px" class="muted">Split between</div><div style="font-size:12.5px" class="faint">${splitHint}</div></div>
+        <div class="split-head"><div style="font-size:14.5px" class="muted">${t('addSheet.splitBetween')}</div><div style="font-size:12.5px" class="faint">${splitHint}</div></div>
         <div class="people-row">
           ${state.users.map((u) => `
             <button class="person-chip ${d.participantIds.includes(u.id) ? 'person-chip--active' : ''}" data-action="draft.togglePerson" data-user-id="${u.id}">
@@ -1016,12 +1161,12 @@ function renderAddSheet() {
       <div class="payer-date-row">
         <button class="payer-btn" data-action="draft.cyclePayer">
           <span class="avatar avatar-sm avatar--muted">${initials(payer.name)}</span>
-          <span>${escapeHtml(payer.name)} paid</span>
+          <span>${t('addSheet.payerPaid', { name: escapeHtml(payer.name) })}</span>
         </button>
-        <button class="date-btn" disabled>Today</button>
+        <button class="date-btn" disabled>${t('addSheet.today')}</button>
       </div>
 
-      <button class="btn-primary" style="margin-top:16px" data-action="draft.save" ${state.draftSaving ? 'disabled' : ''}>${state.draftSaving ? 'Saving…' : 'Save expense'}</button>
+      <button class="btn-primary" style="margin-top:16px" data-action="draft.save" ${state.draftSaving ? 'disabled' : ''}>${state.draftSaving ? t('common.saving') : t('addSheet.save')}</button>
     </div>
   `;
 }
@@ -1036,12 +1181,12 @@ function renderEditSharesSheet() {
     <div class="sheet-panel">
       <div class="sheet-handle"></div>
       <div class="sheet-head">
-        <div class="sheet-title">Edit split</div>
-        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+        <div class="sheet-title">${t('editShares.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.cancel')}</button>
       </div>
 
       <div class="split-block">
-        <div class="split-head"><div style="font-size:14.5px" class="muted">Shares</div><div style="font-size:12.5px" class="faint">${fmt(es.amount)} toman total</div></div>
+        <div class="split-head"><div style="font-size:14.5px" class="muted">${t('editShares.shares')}</div><div style="font-size:12.5px" class="faint">${t('editShares.total', { amount: money(es.amount) })}</div></div>
         ${state.users.map((u) => {
           const on = draft[u.id] !== undefined;
           const share = draft[u.id] || 1;
@@ -1065,7 +1210,7 @@ function renderEditSharesSheet() {
         }).join('')}
       </div>
 
-      <button class="btn-primary" style="margin-top:18px" data-action="shares.save" ${state.editSharesSaving ? 'disabled' : ''}>${state.editSharesSaving ? 'Saving…' : 'Save split'}</button>
+      <button class="btn-primary" style="margin-top:18px" data-action="shares.save" ${state.editSharesSaving ? 'disabled' : ''}>${state.editSharesSaving ? t('common.saving') : t('editShares.save')}</button>
     </div>
   `;
 }
@@ -1073,58 +1218,56 @@ function renderEditSharesSheet() {
 function renderSettleSheet() {
   const { debts } = computeBalanceView();
   const sd = state.settleDraft;
-  const t = getSettleTarget();
-  const targetAmount = t ? t.amount : 0;
+  const target = getSettleTarget();
+  const targetAmount = target ? target.amount : 0;
   const amt = parseAmount(sd.amount);
 
-  let hint = 'Enter an amount.';
-  if (t && amt) {
+  let hint = t('settleSheet.enterAmount');
+  if (target && amt) {
     const left = targetAmount - amt;
-    if (left > 0.5) hint = `${fmt(left)} would still be outstanding between you two.`;
-    else if (left < -0.5) hint = `That’s ${fmt(-left)} more than owed — the balance flips the other way.`;
-    else hint = 'This clears the balance between you two completely.';
+    if (left > 0.5) hint = t('settleSheet.outstanding', { amount: fmt(left) });
+    else if (left < -0.5) hint = t('settleSheet.overpay', { amount: fmt(-left) });
+    else hint = t('settleSheet.cleared');
   }
 
   return `
     <div class="sheet-overlay" data-action="sheet.close"></div>
     <div class="sheet-panel">
       <div class="sheet-handle"></div>
-      <div class="sheet-head"><div class="sheet-title">Settle up</div><button class="sheet-cancel" data-action="sheet.close">Cancel</button></div>
+      <div class="sheet-head"><div class="sheet-title">${t('common.settleUp')}</div><button class="sheet-cancel" data-action="sheet.close">${t('common.cancel')}</button></div>
 
       <div class="counterparty-row">
         ${debts.map((d) => {
           const other = d.from_user_id === state.me.id ? d.to_user_id : d.from_user_id;
           const otherName = d.from_user_id === state.me.id ? d.to_name : d.from_name;
-          const label = d.from_user_id === state.me.id ? `Pay ${otherName}` : `${otherName} pays you`;
+          const label = t(d.from_user_id === state.me.id ? 'settleSheet.pay' : 'settleSheet.paysYou', { name: otherName });
           const active = other === sd.counterpartId;
           return `<button class="counterparty-chip ${active ? 'counterparty-chip--active' : ''}" data-action="settle.pick" data-user-id="${other}">
-            <span>${escapeHtml(label)}</span><span class="tabular">${fmt(d.amount)} toman</span>
+            <span>${escapeHtml(label)}</span><span class="tabular">${money(d.amount)}</span>
           </button>`;
         }).join('')}
       </div>
 
       <div class="settle-line">${
-        t
-          ? (t.iOwe
-              ? `You owe ${escapeHtml(t.debt.to_name)} ${fmt(targetAmount)}. Log what you actually handed over — part of it is fine.`
-              : `${escapeHtml(t.debt.from_name)} owes you ${fmt(targetAmount)}. Log what actually came back.`)
-          : 'Pick who you’re settling with.'
+        target
+          ? t(target.iOwe ? 'settleSheet.youOwe' : 'settleSheet.owesYou', { name: escapeHtml(target.iOwe ? target.debt.to_name : target.debt.from_name), amount: fmt(targetAmount) })
+          : t('settleSheet.pickWho')
       }</div>
 
       <div class="amount-row">
         <input class="amount-input amount-input--sm tabular" inputmode="numeric" data-field="settle.amount" value="${escapeHtml(sd.amount)}" />
-        <div class="amount-unit">toman</div>
+        <div class="amount-unit">${currencyUnitLabel()}</div>
       </div>
       <div class="amount-rule"></div>
 
       <div class="quick-row">
-        <button class="quick-btn" data-action="settle.full">Full amount</button>
-        <button class="quick-btn" data-action="settle.half">Half</button>
+        <button class="quick-btn" data-action="settle.full">${t('settleSheet.fullAmount')}</button>
+        <button class="quick-btn" data-action="settle.half">${t('settleSheet.half')}</button>
       </div>
 
       <div class="settle-hint">${hint}</div>
 
-      <button class="btn-sage" style="margin-top:14px" data-action="settle.confirm" ${state.settleSaving ? 'disabled' : ''}>${state.settleSaving ? 'Saving…' : 'Mark as paid'}</button>
+      <button class="btn-sage" style="margin-top:14px" data-action="settle.confirm" ${state.settleSaving ? 'disabled' : ''}>${state.settleSaving ? t('common.saving') : t('settleSheet.markPaid')}</button>
     </div>
   `;
 }
@@ -1138,25 +1281,78 @@ function renderMenuSheet() {
       <div class="sheet-handle"></div>
       ${isAdmin ? `
         <button class="menu-row" data-action="toHousehold">
-          <span style="flex:1">Household</span>
+          <span style="flex:1">${t('menu.household')}</span>
           ${pendingCount > 0 ? `<span class="menu-badge">${pendingCount}</span>` : ''}
-          <span class="faint" style="font-size:13px">${pendingCount > 0 ? 'waiting' : 'all in'}</span>
+          <span class="faint" style="font-size:13px">${t(pendingCount > 0 ? 'menu.waiting' : 'menu.allIn')}</span>
         </button>
       ` : ''}
       <button class="menu-row" data-action="toHistory">
-        <span style="flex:1">History</span>
-        <span class="faint" style="font-size:13px">All ${state.expenses.length} expenses</span>
+        <span style="flex:1">${t('history.title')}</span>
+        <span class="faint" style="font-size:13px">${t('common.allExpenses', { n: fmt(state.expenses.length) })}</span>
+      </button>
+      <button class="menu-row" data-action="menu.openLang">
+        <span style="flex:1">${t('langSheet.title')}</span>
+        <span class="faint" style="font-size:13px">${LANG_OPTIONS.find((l) => l.code === state.lang).native}</span>
       </button>
       ${pushSupported() ? `
         <button class="menu-row" data-action="notifications.toggle">
-          <span style="flex:1">Notifications</span>
-          <span class="faint" style="font-size:13px">${state.pushEnabled ? 'On' : 'Off'}</span>
+          <span style="flex:1">${t('menu.notifications')}</span>
+          <span class="faint" style="font-size:13px">${t(state.pushEnabled ? 'menu.on' : 'menu.off')}</span>
         </button>
       ` : ''}
       <button class="menu-row menu-row--last" data-action="logout">
-        <span style="flex:1;color:var(--ink-soft)">Sign out</span>
+        <span style="flex:1;color:var(--ink-soft)">${t('menu.signOut')}</span>
       </button>
-      <button class="btn-secondary" style="margin-top:14px" data-action="sheet.close">Close</button>
+      <button class="btn-secondary" style="margin-top:14px" data-action="sheet.close">${t('menu.close')}</button>
+    </div>
+  `;
+}
+
+function renderLangSheet() {
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">${t('langSheet.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.done')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:13px;line-height:1.5" class="faint">${t('langSheet.subtitle')}</div>
+      <div style="margin-top:14px;display:flex;flex-direction:column">
+        ${LANG_OPTIONS.map((l) => `
+          <button class="menu-row" data-action="lang.pick" data-lang="${l.code}" style="padding:15px 2px">
+            <span style="flex:1;font-size:17px;font-family:${l.font}">${l.native}</span>
+            <span class="faint" style="font-size:13px">${t(l.descKey)}</span>
+            <span style="width:16px;flex:none;font-size:15px;color:var(--sage)">${state.lang === l.code ? '✓' : ''}</span>
+          </button>
+        `).join('')}
+      </div>
+      <div style="margin-top:14px;font-size:12.5px;line-height:1.5" class="faint">${t('langSheet.footnote')}</div>
+    </div>
+  `;
+}
+
+function renderCurrencySheet() {
+  const draft = state.draftCurrency;
+  const unchanged = state.household && draft === state.household.currency;
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">${t('currencySheet.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.done')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:13px;line-height:1.5" class="faint">${t('currencySheet.subtitle')}</div>
+      <div class="chip-row" style="margin-top:16px">
+        ${CURRENCY_ORDER.map((code) => `<button class="chip ${draft === code ? 'chip--active' : ''}" data-action="currency.pick" data-currency="${code}">${t(CURRENCY_META[code].nameKey)}</button>`).join('')}
+      </div>
+      <div style="margin-top:16px;display:flex;align-items:baseline;justify-content:space-between;gap:10px;background:var(--card);border:1px solid var(--border-soft);border-radius:14px;padding:12px 15px">
+        <div style="font-size:12.5px" class="faint">${t('currencySheet.amountsWillRead')}</div>
+        <div class="tabular" style="font-family:var(--font-serif);font-size:21px">${currencyPreviewText(draft)}</div>
+      </div>
+      <div style="margin-top:12px;font-size:12.5px;line-height:1.5" class="faint">${t(unchanged ? 'currencySheet.noteUnchanged' : 'currencySheet.noteChange')}</div>
+      <button class="btn-primary" style="margin-top:16px" data-action="currency.save" ${state.currencySaving ? 'disabled' : ''}>${state.currencySaving ? t('common.saving') : t('currencySheet.use', { name: t(CURRENCY_META[draft].nameKey) })}</button>
     </div>
   `;
 }
@@ -1172,20 +1368,29 @@ function renderHousehold() {
     <div class="screen">
       <div class="topbar">
         <button class="icon-btn" data-action="toHome"><div class="chevron"></div></button>
-        <div class="eyebrow">Admin</div>
+        <div class="eyebrow">${t('hhAdmin.eyebrow')}</div>
       </div>
 
       <div style="margin-top:26px">
         <button class="hh-title-btn" data-action="household.openRename">
           <span class="hh-title">${escapeHtml(householdName)}</span>
-          <span class="hh-rename-hint">rename</span>
+          <span class="hh-rename-hint">${t('hhAdmin.renameHint')}</span>
         </button>
-        <div style="margin-top:7px;font-size:13.5px" class="muted">${members.length} member${members.length === 1 ? '' : 's'} · ${waitingCount ? waitingCount + ' waiting to join' : 'nobody waiting'}</div>
+        <div style="margin-top:7px;font-size:13.5px" class="muted">${t(members.length === 1 ? 'hhAdmin.memberOne' : 'hhAdmin.memberMany', { n: fmt(members.length) })} · ${waitingCount ? t('hhAdmin.waitingToJoin', { n: fmt(waitingCount) }) : t('hhAdmin.nobodyWaiting')}</div>
       </div>
 
+      <button class="menu-row" data-action="household.openCurrency" style="margin-top:20px;padding:14px 0">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:15.5px;color:var(--ink)">${t('signup.currencyTitle')}</div>
+          <div style="margin-top:3px;font-size:12.5px" class="faint">${t('hhAdmin.currencySub')}</div>
+        </div>
+        <div style="font-size:14.5px" class="muted">${state.household ? t(CURRENCY_META[state.household.currency].nameKey) : ''}</div>
+        <div class="chevron-right"></div>
+      </button>
+
       <div class="hh-section">
-        <div class="hh-section-head"><div class="eyebrow">Requests</div><div style="font-size:12px" class="faint">${waitingCount ? waitingCount + ' waiting' : 'clear'}</div></div>
-        ${waitingCount === 0 ? `<div class="hh-empty">Nobody waiting.<br />New sign-ups land here for you to let in.</div>` : ''}
+        <div class="hh-section-head"><div class="eyebrow">${t('hhAdmin.requests')}</div><div style="font-size:12px" class="faint">${waitingCount ? t('menu.waiting') : t('hhAdmin.clear')}</div></div>
+        ${waitingCount === 0 ? `<div class="hh-empty">${t('hhAdmin.emptyRequests')}<br />${t('hhAdmin.emptyRequestsSub')}</div>` : ''}
         ${pending.map((p) => {
           const role = state.requestRoles[p.id] || 'member';
           return `
@@ -1196,13 +1401,13 @@ function renderHousehold() {
                   <div class="request-name">${escapeHtml(p.name)}</div>
                   <div class="request-email">${escapeHtml(p.email)}</div>
                 </div>
-                <button class="approve-btn" data-action="household.approve" data-user-id="${p.id}">Approve</button>
+                <button class="approve-btn" data-action="household.approve" data-user-id="${p.id}">${t('hhAdmin.approve')}</button>
               </div>
               <div class="request-role-row">
-                <span class="faint" style="font-size:12.5px">${p.invited ? 'Invited as' : 'Joins as'}</span>
-                <button class="role-pill-btn" data-action="household.toggleRole" data-user-id="${p.id}">${role === 'admin' ? 'Admin' : 'Member'}</button>
-                <button class="role-swap-link" data-action="household.toggleRole" data-user-id="${p.id}">${role === 'admin' ? 'make member instead' : 'make admin instead'}</button>
-                <button class="request-decline-link" data-action="household.decline" data-user-id="${p.id}">Decline</button>
+                <span class="faint" style="font-size:12.5px">${t(p.invited ? 'hhAdmin.invitedAs' : 'hhAdmin.joinsAs')}</span>
+                <button class="role-pill-btn" data-action="household.toggleRole" data-user-id="${p.id}">${t(role === 'admin' ? 'common.admin' : 'common.member')}</button>
+                <button class="role-swap-link" data-action="household.toggleRole" data-user-id="${p.id}">${t(role === 'admin' ? 'hhAdmin.makeMemberInstead' : 'hhAdmin.makeAdminInstead')}</button>
+                <button class="request-decline-link" data-action="household.decline" data-user-id="${p.id}">${t('hhAdmin.decline')}</button>
               </div>
             </div>
           `;
@@ -1210,7 +1415,7 @@ function renderHousehold() {
       </div>
 
       <div class="hh-section">
-        <div class="hh-section-head"><div class="eyebrow">Members</div><div style="font-size:12px" class="faint">${members.length} approved</div></div>
+        <div class="hh-section-head"><div class="eyebrow">${t('hhAdmin.members')}</div><div style="font-size:12px" class="faint">${t('hhAdmin.approved', { n: fmt(members.length) })}</div></div>
         ${members.map((m) => `
           <button class="member-row" data-action="member.open" data-user-id="${m.id}">
             <div class="avatar avatar-30 ${avatarClass(m.id, m.id === state.me.id)}">${initials(m.name)}</div>
@@ -1218,18 +1423,18 @@ function renderHousehold() {
               <div class="member-name">${escapeHtml(m.name)}</div>
               <div class="member-email">${escapeHtml(m.email)}</div>
             </div>
-            <div class="member-role-badge ${m.role === 'admin' ? 'member-role-badge--admin' : 'member-role-badge--member'}">${m.role === 'admin' ? 'Admin' : 'Member'}</div>
+            <div class="member-role-badge ${m.role === 'admin' ? 'member-role-badge--admin' : 'member-role-badge--member'}">${t(m.role === 'admin' ? 'common.admin' : 'common.member')}</div>
             <div class="chevron-right"></div>
           </button>
         `).join('')}
         <button class="hh-add-btn" data-action="household.openInvite">
-          <span style="font-size:18px;line-height:1;font-weight:400">+</span><span>Add someone manually</span>
+          <span style="font-size:18px;line-height:1;font-weight:400">+</span><span>${t('hhAdmin.addSomeone')}</span>
         </button>
       </div>
 
       ${former.length ? `
         <div class="hh-section">
-          <div class="hh-section-head"><div class="eyebrow">No longer in the flat</div><div style="font-size:12px" class="faint">history kept</div></div>
+          <div class="hh-section-head"><div class="eyebrow">${t('hhAdmin.formerTitle')}</div><div style="font-size:12px" class="faint">${t('hhAdmin.historyKept')}</div></div>
           ${former.map((m) => `
             <button class="former-row" data-action="member.open" data-user-id="${m.id}">
               <div class="avatar-dashed">${initials(m.name)}</div>
@@ -1238,7 +1443,7 @@ function renderHousehold() {
               <div class="chevron-right"></div>
             </button>
           `).join('')}
-          <div class="hh-footnote">Their expenses, shares and any outstanding balance stay in the books.</div>
+          <div class="hh-footnote">${t('hhAdmin.formerFootnote')}</div>
         </div>
       ` : ''}
       <div style="height:20px"></div>
@@ -1257,33 +1462,27 @@ function renderMemberSheet() {
     const on = selected.role === r;
     const locked = isLastAdmin && r === 'member';
     const cls = on ? 'role-option-btn role-option-btn--on' : locked ? 'role-option-btn role-option-btn--locked' : 'role-option-btn';
-    return `<button class="${cls}" data-action="member.pickRole" data-role="${r}">${r === 'admin' ? 'Admin' : 'Member'}</button>`;
+    return `<button class="${cls}" data-action="member.pickRole" data-role="${r}">${t(r === 'admin' ? 'common.admin' : 'common.member')}</button>`;
   }).join('');
-  const roleNote = selected.role === 'admin'
-    ? 'Admins approve sign-ups, add and remove people, and rename the household.'
-    : 'Members log and settle expenses. They never see this screen.';
+  const roleNote = t(selected.role === 'admin' ? 'memberSheet.roleNoteAdmin' : 'memberSheet.roleNoteMember');
 
   const st = selected.status;
   const firstNm = firstName(selected.name);
   const rawFirst = st === 'approved'
-    ? { label: 'Mark as moved out', kind: 'quiet', to: 'moved_out' }
-    : { label: `Move ${firstNm} back in`, kind: 'quiet', to: 'approved' };
+    ? { label: t('memberSheet.markMovedOut'), kind: 'quiet', to: 'moved_out' }
+    : { label: t('memberSheet.moveBackIn', { name: firstNm }), kind: 'quiet', to: 'approved' };
   const rawSecond = st === 'removed'
-    ? { label: 'Give sign-in back (moved out)', kind: 'quiet', to: 'moved_out' }
-    : { label: 'Revoke sign-in entirely', kind: 'danger', to: 'removed' };
+    ? { label: t('memberSheet.giveBackAccess'), kind: 'quiet', to: 'moved_out' }
+    : { label: t('memberSheet.revoke'), kind: 'danger', to: 'removed' };
   const actionsHtml = [rawFirst, rawSecond].map((a) => {
     const blocked = (isSelf || isLastAdmin) && a.to !== 'approved';
-    const label = blocked ? (isSelf ? 'You can’t change your own access' : 'The last admin keeps access') : a.label;
+    const label = blocked ? t(isSelf ? 'memberSheet.blockedSelf' : 'memberSheet.blockedLastAdmin') : a.label;
     const cls = blocked ? 'access-action-btn access-action-btn--locked' : a.kind === 'danger' ? 'access-action-btn access-action-btn--danger' : 'access-action-btn';
     return `<button class="${cls}" data-action="member.runAccess" data-to="${a.to}" data-blocked="${blocked ? '1' : ''}">${escapeHtml(label)}</button>`;
   }).join('');
 
-  const accessLabel = st === 'approved' ? 'In the flat' : st === 'moved_out' ? 'Moved out' : 'No access';
-  const accessNote = st === 'approved'
-    ? 'Moved out keeps their sign-in: they can see the balance, look back through history and settle up, but not log new expenses or be tagged on them. Revoking takes sign-in away entirely — the records stay either way.'
-    : st === 'moved_out'
-      ? 'They can still sign in to settle what’s outstanding. Nothing they logged was undone.'
-      : 'No sign-in. Their expenses, shares and balance are all still in the books.';
+  const accessLabel = t(st === 'approved' ? 'memberSheet.accessInFlat' : st === 'moved_out' ? 'home.movedOutEyebrow' : 'memberSheet.accessNoAccess');
+  const accessNote = t(st === 'approved' ? 'memberSheet.accessNoteApproved' : st === 'moved_out' ? 'memberSheet.accessNoteMovedOut' : 'memberSheet.accessNoteRemoved');
 
   return `
     <div class="sheet-overlay" data-action="sheet.close"></div>
@@ -1295,20 +1494,20 @@ function renderMemberSheet() {
           <div class="member-sheet-title">${escapeHtml(selected.name)}</div>
           <div class="member-sheet-email">${escapeHtml(selected.email)}</div>
         </div>
-        <button class="sheet-cancel" data-action="sheet.close">Done</button>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.done')}</button>
       </div>
 
-      <div class="detail-row"><div class="detail-label">Standing</div><div class="detail-value tabular">${escapeHtml(standingLabel(selected.id))}</div></div>
+      <div class="detail-row"><div class="detail-label">${t('memberSheet.standing')}</div><div class="detail-value tabular">${escapeHtml(standingLabel(selected.id))}</div></div>
 
       ${isActive ? `
         <div class="detail-row">
-          <div class="detail-label">Role</div>
+          <div class="detail-label">${t('memberSheet.role')}</div>
           <div class="role-options-row">${roleOptionsHtml}</div>
         </div>
         <div class="detail-note role-note">${escapeHtml(roleNote)}</div>
       ` : ''}
 
-      <div class="detail-row"><div class="detail-label">Access</div><div class="detail-value">${escapeHtml(accessLabel)}</div></div>
+      <div class="detail-row"><div class="detail-label">${t('memberSheet.access')}</div><div class="detail-value">${escapeHtml(accessLabel)}</div></div>
       <div class="access-actions">${actionsHtml}</div>
       <div class="detail-note" style="margin-top:12px">${escapeHtml(accessNote)}</div>
     </div>
@@ -1322,22 +1521,22 @@ function renderInviteSheet() {
     <div class="sheet-panel">
       <div class="sheet-handle"></div>
       <div class="sheet-head">
-        <div class="sheet-title">Add someone</div>
-        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+        <div class="sheet-title">${t('inviteSheet.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.cancel')}</button>
       </div>
 
-      <input class="underline-input" style="margin-top:18px" data-field="invite.name" value="${escapeHtml(f.name)}" placeholder="Name" />
-      <input class="underline-input" style="margin-top:14px" type="email" dir="ltr" data-field="invite.email" value="${escapeHtml(f.email)}" placeholder="Email" />
+      <input class="underline-input" style="margin-top:18px" data-field="invite.name" value="${escapeHtml(f.name)}" placeholder="${t('inviteSheet.namePlaceholder')}" />
+      <input class="underline-input" style="margin-top:14px" type="text" inputmode="email" autocapitalize="off" spellcheck="false" dir="ltr" data-field="invite.email" value="${escapeHtml(f.email)}" placeholder="${t('inviteSheet.emailPlaceholder')}" />
 
       <div class="invite-role-row">
-        <div class="detail-label">Joins as</div>
+        <div class="detail-label">${t('hhAdmin.joinsAs')}</div>
         <div class="role-options-row">
-          ${['member', 'admin'].map((r) => `<button class="role-option-btn ${f.role === r ? 'role-option-btn--on' : ''}" data-action="invite.pickRole" data-role="${r}">${r === 'admin' ? 'Admin' : 'Member'}</button>`).join('')}
+          ${['member', 'admin'].map((r) => `<button class="role-option-btn ${f.role === r ? 'role-option-btn--on' : ''}" data-action="invite.pickRole" data-role="${r}">${t(r === 'admin' ? 'common.admin' : 'common.member')}</button>`).join('')}
         </div>
       </div>
 
-      <button class="btn-primary" style="margin-top:22px" data-action="invite.send" ${state.inviteSaving ? 'disabled' : ''}>${state.inviteSaving ? 'Creating…' : 'Copy invite link'}</button>
-      <div class="detail-note" style="margin-top:12px">They’ll appear under Requests as invited, already approved the moment they set a password.</div>
+      <button class="btn-primary" style="margin-top:22px" data-action="invite.send" ${state.inviteSaving ? 'disabled' : ''}>${state.inviteSaving ? t('inviteSheet.creating') : t('inviteSheet.copyLink')}</button>
+      <div class="detail-note" style="margin-top:12px">${t('inviteSheet.footnote')}</div>
     </div>
   `;
 }
@@ -1348,11 +1547,11 @@ function renderRenameSheet() {
     <div class="sheet-panel">
       <div class="sheet-handle"></div>
       <div class="sheet-head">
-        <div class="sheet-title">Household name</div>
-        <button class="sheet-cancel" data-action="sheet.close">Cancel</button>
+        <div class="sheet-title">${t('renameSheet.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.cancel')}</button>
       </div>
       <input class="underline-input underline-input--serif" style="margin-top:18px" data-field="rename.draft" value="${escapeHtml(state.renameDraft)}" />
-      <button class="btn-primary" style="margin-top:22px" data-action="household.saveRename" ${state.renameSaving ? 'disabled' : ''}>${state.renameSaving ? 'Saving…' : 'Save'}</button>
+      <button class="btn-primary" style="margin-top:22px" data-action="household.saveRename" ${state.renameSaving ? 'disabled' : ''}>${state.renameSaving ? t('common.saving') : t('renameSheet.save')}</button>
     </div>
   `;
 }
@@ -1365,23 +1564,23 @@ function renderAcceptInvite() {
         <div class="brand">Halves</div>
         ${ai.error
           ? `<div class="error-row" style="margin-top:20px"><div class="error-dot"></div><div class="error-text">${escapeHtml(ai.error)}</div></div>`
-          : `<div class="tagline">Loading your invite…</div>`}
-        <div class="link-row"><button data-action="acceptInvite.toLogin">Back to sign in</button></div>
+          : `<div class="tagline">${t('acceptInvite.loading')}</div>`}
+        <div class="link-row"><button data-action="acceptInvite.toLogin">${t('common.backToSignIn')}</button></div>
       </div>
     `;
   }
   return `
     <div class="screen screen--auth">
       <div class="brand">Halves</div>
-      <div class="tagline">${escapeHtml(ai.name)}, set a password to join ${escapeHtml(ai.householdName)}.</div>
+      <div class="tagline">${t('acceptInvite.setPassword', { name: escapeHtml(ai.name), household: escapeHtml(ai.householdName) })}</div>
       <div class="form-stack">
         <div class="field">
-          <label>Password</label>
-          <input type="password" data-field="acceptInvite.password" value="${escapeHtml(ai.password)}" placeholder="At least 8 characters" />
+          <label>${t('login.labelPassword')}</label>
+          <input type="password" data-field="acceptInvite.password" value="${escapeHtml(ai.password)}" placeholder="${t('signup.passwordHint')}" />
         </div>
       </div>
       ${ai.error ? `<div class="error-row"><div class="error-dot"></div><div class="error-text">${escapeHtml(ai.error)}</div></div>` : ''}
-      <button class="btn-primary" style="margin-top:26px" data-action="acceptInvite.submit" ${ai.loading ? 'disabled' : ''}>${ai.loading ? 'Joining…' : 'Join ' + escapeHtml(ai.householdName)}</button>
+      <button class="btn-primary" style="margin-top:26px" data-action="acceptInvite.submit" ${ai.loading ? 'disabled' : ''}>${ai.loading ? t('acceptInvite.joining') : t('acceptInvite.join', { household: escapeHtml(ai.householdName) })}</button>
     </div>
   `;
 }
@@ -1407,6 +1606,8 @@ function buildHtml() {
   if (state.sheet === 'member') html += renderMemberSheet();
   if (state.sheet === 'invite') html += renderInviteSheet();
   if (state.sheet === 'rename') html += renderRenameSheet();
+  if (state.sheet === 'lang') html += renderLangSheet();
+  if (state.sheet === 'currency') html += renderCurrencySheet();
   if (state.toast) html += `<div class="toast">${escapeHtml(state.toast)}</div>`;
   return html;
 }
@@ -1414,6 +1615,9 @@ function buildHtml() {
 let lastRenderedSheet = null;
 
 function render() {
+  document.documentElement.lang = state.lang;
+  document.documentElement.dir = state.lang === 'fa' ? 'rtl' : 'ltr';
+
   const app = document.getElementById('app');
   const active = document.activeElement;
   const activeField = active && active.matches && active.matches('[data-field]') ? active.dataset.field : null;
@@ -1477,9 +1681,19 @@ function handleAction(action, el) {
     case 'signup.toLogin': state.route = 'login'; return render();
     case 'signup.modeCreate': state.signupForm.mode = 'create'; return render();
     case 'signup.modeJoin': state.signupForm.mode = 'join'; return render();
+    case 'signup.pickLang':
+      state.lang = el.dataset.lang;
+      localStorage.setItem('halves_lang', state.lang);
+      return render();
+    case 'signup.pickCurrency': state.signupForm.currency = el.dataset.currency; return render();
     case 'signup.submit': return doSignup();
     case 'logout': return doLogout();
     case 'menu.open': state.sheet = 'menu'; return render();
+    case 'menu.openLang': state.sheet = 'lang'; return render();
+    case 'lang.pick': return pickLanguage(el.dataset.lang);
+    case 'household.openCurrency': return openCurrencySheet();
+    case 'currency.pick': state.draftCurrency = el.dataset.currency; return render();
+    case 'currency.save': return saveCurrency();
     case 'notifications.toggle': return toggleNotifications();
     case 'openAdd': return openAddSheet();
     case 'openSettle': return openSettleSheet();

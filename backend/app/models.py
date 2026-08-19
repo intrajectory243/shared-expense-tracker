@@ -22,6 +22,19 @@ class UserStatus(str, enum.Enum):
     removed = "removed"  # sign-in refused entirely, including on an already-issued token
 
 
+class Language(str, enum.Enum):
+    en = "en"
+    fa = "fa"
+
+
+class Currency(str, enum.Enum):
+    toman = "toman"
+    rial = "rial"
+    usd = "usd"
+    eur = "eur"
+    aed = "aed"
+
+
 # Each expense has its own participant list, independent of who paid —
 # this is what lets costs split only among whoever is actually tagged
 # on that specific item (roadmap Phase 1). `share` is a weight, not a dollar
@@ -44,6 +57,7 @@ class Household(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
+    currency: Mapped[Currency] = mapped_column(Enum(Currency), default=Currency.toman, server_default="toman")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[list["User"]] = relationship(back_populates="household")
@@ -60,6 +74,7 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(120))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), default=UserRole.member)
     status: Mapped[UserStatus] = mapped_column(Enum(UserStatus), default=UserStatus.pending)
+    language: Mapped[Language] = mapped_column(Enum(Language), default=Language.en, server_default="en")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     # Set only for accounts created via an admin invite; cleared once the

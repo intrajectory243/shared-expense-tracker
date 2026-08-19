@@ -2,7 +2,7 @@ from datetime import date as date_type, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.models import UserRole, UserStatus
+from app.models import Currency, Language, UserRole, UserStatus
 
 
 # ---- Auth / Users ----
@@ -13,6 +13,10 @@ class UserSignup(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     household_name: str | None = Field(default=None, description="Create a new household")
     household_id: int | None = Field(default=None, description="Join an existing household (see GET /households)")
+    language: Language = Language.en
+    household_currency: Currency = Field(
+        default=Currency.toman, description="Only applied when creating a new household; ignored when joining one"
+    )
 
 
 class UserLogin(BaseModel):
@@ -33,6 +37,7 @@ class UserOut(BaseModel):
     name: str
     role: UserRole
     status: UserStatus
+    language: Language
     household_id: int | None
     invited: bool = False
 
@@ -50,6 +55,10 @@ class UserUpdate(BaseModel):
 
     role: UserRole | None = None
     status: UserStatus | None = None
+
+
+class UserLanguageUpdate(BaseModel):
+    language: Language
 
 
 class InviteCreate(BaseModel):
@@ -75,10 +84,12 @@ class HouseholdOut(BaseModel):
 
     id: int
     name: str
+    currency: Currency
 
 
 class HouseholdUpdate(BaseModel):
-    name: str = Field(min_length=1, max_length=120)
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    currency: Currency | None = None
 
 
 # ---- Expenses ----

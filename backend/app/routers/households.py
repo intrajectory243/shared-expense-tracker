@@ -25,7 +25,10 @@ def rename_household(
     if household_id != admin.household_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your household")
     household = db.query(Household).filter(Household.id == household_id).first()
-    household.name = payload.name.strip()
+    if payload.name is not None:
+        household.name = payload.name.strip()
+    if payload.currency is not None:
+        household.currency = payload.currency
     db.commit()
     db.refresh(household)
     return household

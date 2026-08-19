@@ -83,12 +83,48 @@ Built as a single-file vanilla-JS SPA (`app.js`, no framework, no build step), s
 
 ---
 
+## Phase 6 — Internationalization ✅ Done
+
+- **Per-user language**, not per-household: English and Persian (Farsi) only for this pass — the design mockups also sketch Arabic, but that's explicitly out of scope until a language actually gets added. Chosen at signup (inline chips), changeable anytime from Menu → Language, self-service even for a still-pending user.
+- **Per-household display currency**, admin-controlled: Toman, Rial, USD, EUR, AED. Purely cosmetic relabeling — the stored `amount` is never converted, only re-formatted. A live preview in the Currency sheet shows exactly what will change before saving.
+- **Backend:** `Language`/`Currency` enums + columns (`User.language`, `Household.currency`), an Alembic migration with safe defaults for existing rows, a self-service `PATCH /users/me/language` endpoint, and `PATCH /households/{id}` extended to take `currency`. 10 new tests, all passing alongside the existing 44.
+- **Frontend architecture:** flat dotted-key dictionary (`en`/`fa`) behind a single `t(key, params)` lookup, `state.lang` synced from the account on login/signup, `document.documentElement.lang`/`dir` driven centrally, and locale-aware number/date formatting (Persian digits + Jalali calendar via `Intl`'s `-u-ca-persian-nu-arabext`).
+- **RTL isolated by construction, not by convention:** almost every rule uses CSS logical properties (`margin-inline-*`, `text-align: start`, etc.), so it's direction-agnostic automatically. The two things that can't be expressed that way (the CSS-border-triangle chevrons, the Persian font swap) are consolidated into one bannered block at the end of `styles.css` — the single place anyone ever needs to touch for a language/direction change.
+- **Full copy pass, not just the mocked screens:** every screen and sheet (signup, home, history, add/settle/edit-shares sheets, household admin, member sheet, invite, rename, menu, accept-invite, the new Language/Currency sheets) and every toast/error message routes through `t()` — roughly 240 keys, in parity across both languages.
+- **Verified live**, not just statically: drove the running app through a real signup → approval-pending → admin login → add expense → switch language mid-session → history → currency change flow in a headless browser, in both languages, with zero console errors.
+
+---
+
+## Phase 7 — Per-Household DB Sharding 🔜 Planned (decided, not started)
+
+Originally sketched in Phase 5 as a future option gated on write volume or fault-isolation needs — **now explicitly scheduled** as the prerequisite for Phase 8, not for scaling. Doing it first turns Phase 8's hardest problem (scoping a backup so it can't leak another household's data) into a non-issue: one SQLite file per household means there's nothing else *in* the file to leak.
+
+Scope, per the Phase 5 estimate (~a day or two of focused work):
+- Split the schema: `users`/`households`/`invites` stay in the shared file; `expenses`/`participants`/`settlements`/`balance_cache` move to one file per `household_id`.
+- Add an LRU-capped engine registry keyed by `household_id`; rewire `get_db()` and the routers that touch per-household tables to resolve through it instead of a single global engine.
+- Migrations become per-file — Alembic needs to run against whichever shard is open, not just the one shared DB.
+- The precondition that makes this cheap is already in place and has been true since Phase 5: every existing query already filters by `household_id`, so no query currently crosses the boundary this split introduces.
+
+---
+
+## Phase 8 — Admin Backup & Restore 🔜 Planned (blocked on Phase 7)
+
+Requested by the admin persona: a way to export a household's data and bring it back later (self-host migration, accidental-deletion recovery, or just peace of mind).
+
+Building this **after** Phase 7 lands changes the shape of the feature entirely: with the household already isolated to its own SQLite file, backup is just "download that file" and restore is "upload a file back into that slot" — no bespoke JSON export/import format, no filtering logic, no cross-household leak risk to design around.
+
+What's still genuinely open, sharding aside:
+- **Restore safety:** swapping a live household's DB file out from under an open connection needs care — likely evict/close that household's engine from the LRU registry first, write the new file, then let the next request re-open it. Needs a confirmation step at minimum; a preview/dry-run would be nicer but isn't required to ship a first version.
+- **Who can restore:** household admin restoring their own household's file is the safe, bounded case. A full-instance restore (every household at once) is a different, higher-privilege operation and probably belongs to the self-hoster, not any household admin — worth deciding explicitly rather than defaulting into it.
+- Its own UI (export/import buttons, confirmation dialog, result toast) joins the i18n copy backlog once built — same pattern as any other new unmocked screen.
+
+---
+
 ## Status
 
-**Beta — all five phases done, with several extras beyond original scope.**
+**Beta — Phases 1–6 done, with several extras beyond original scope. Phase 7 (sharding) and Phase 8 (backup/restore) planned and sequenced, neither started.**
 
 Deliberately deferred, not blockers:
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.
-2. **Per-household DB sharding** — future option only, see Phase 5 notes; not being built until write volume actually demands it.
 
 *Originally: planning stage, no code written yet. This section now reflects the actual implementation, checked against `backend/` and `frontend/` in the `shared-expense-tracker-main` upload.*

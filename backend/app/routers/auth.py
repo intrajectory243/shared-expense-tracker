@@ -20,7 +20,7 @@ def signup(payload: UserSignup, db: Session = Depends(get_db)):
 
     household = None
     if payload.household_name:
-        household = Household(name=payload.household_name)
+        household = Household(name=payload.household_name, currency=payload.household_currency)
         db.add(household)
         db.flush()
     elif payload.household_id:
@@ -33,6 +33,7 @@ def signup(payload: UserSignup, db: Session = Depends(get_db)):
         email=payload.email,
         password_hash=hash_password(payload.password),
         name=payload.name,
+        language=payload.language,
         household_id=household.id if household else None,
         # First user on a fresh instance bootstraps as an approved admin so
         # a self-hosted install is usable immediately (Phase 2 auth notes).

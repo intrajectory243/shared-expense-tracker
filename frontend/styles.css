@@ -48,6 +48,11 @@ input, button, textarea {
   font-family: var(--font-sans);
   -webkit-appearance: none;
 }
+/* Always-LTR fields (email, etc.) regardless of app language — not part of
+   the language/direction system below, this is a fixed per-field override. */
+input[dir="ltr"] {
+  direction: ltr !important;
+}
 input:focus { outline: none; }
 button { cursor: pointer; }
 
@@ -212,8 +217,8 @@ button { cursor: pointer; }
   flex: none;
 }
 .avatar-stack { display: flex; }
-.avatar-stack .avatar { margin-left: -9px; border: 2px solid var(--bg); }
-.avatar-stack .avatar:first-child { margin-left: 0; border: none; }
+.avatar-stack .avatar { margin-inline-start: -9px; border: 2px solid var(--bg); }
+.avatar-stack .avatar:first-child { margin-inline-start: 0; border: none; }
 .avatar--me { background: var(--ink); color: var(--bg); }
 .avatar--sage { background: var(--sage-dot); }
 .avatar--amber { background: var(--amber-dot); }
@@ -226,7 +231,7 @@ button { cursor: pointer; }
 /* Top bar */
 .topbar { display: flex; align-items: center; justify-content: space-between; }
 .topbar-left { display: flex; align-items: center; gap: 8px; }
-.household-label { font-size: 13.5px; color: var(--ink-soft); margin-left: 2px; }
+.household-label { font-size: 13.5px; color: var(--ink-soft); margin-inline-start: 2px; }
 
 .icon-btn {
   width: 34px; height: 34px; border-radius: 99px;
@@ -237,12 +242,12 @@ button { cursor: pointer; }
 .icon-btn .dot { width: 3px; height: 3px; border-radius: 9px; background: var(--ink-soft); }
 .icon-btn .chevron {
   width: 8px; height: 8px; border-left: 1.5px solid var(--ink); border-bottom: 1.5px solid var(--ink);
-  transform: rotate(45deg); margin-left: -2px;
+  transform: rotate(45deg); margin-inline-end: -2px;
 }
 
 .icon-btn-wrap { position: relative; display: inline-flex; }
 .badge-count {
-  position: absolute; top: -3px; right: -3px; min-width: 18px; height: 18px; box-sizing: border-box;
+  position: absolute; top: -3px; inset-inline-end: -3px; min-width: 18px; height: 18px; box-sizing: border-box;
   padding: 0 5px; border-radius: 99px; background: var(--ink); color: var(--bg);
   font-size: 10.5px; font-weight: 500; display: flex; align-items: center; justify-content: center;
   border: 2px solid var(--bg);
@@ -251,7 +256,7 @@ button { cursor: pointer; }
 .menu-row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 15px 2px;
   border: 0; border-bottom: 1px solid var(--border); background: transparent; cursor: pointer;
-  text-align: left; font-size: 17px; color: var(--ink);
+  text-align: start; font-size: 17px; color: var(--ink);
 }
 .menu-row--last { border-bottom: 0; }
 .menu-badge {
@@ -302,7 +307,7 @@ button { cursor: pointer; }
 .month-total { font-size: 12px; color: var(--ink-faint); }
 
 .history-row { display: flex; gap: 13px; padding: 16px 2px; border-bottom: 1px solid var(--border-soft); }
-button.history-row { width: 100%; border: 0; background: transparent; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.history-row { width: 100%; border: 0; background: transparent; font: inherit; color: inherit; text-align: start; cursor: pointer; }
 .history-day { width: 32px; flex: none; padding-top: 2px; font-size: 11.5px; line-height: 1.25; color: var(--ink-faint); }
 .history-main { flex: 1; min-width: 0; }
 .history-top { display: flex; align-items: baseline; gap: 10px; }
@@ -333,7 +338,7 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 
 /* Edit-split shares */
 .share-row { width: 100%; display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid var(--border-soft); }
-.share-toggle { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; border: 0; background: transparent; padding: 0; color: var(--ink-faint); font-size: 15px; text-align: left; }
+.share-toggle { flex: 1; display: flex; align-items: center; gap: 10px; min-width: 0; border: 0; background: transparent; padding: 0; color: var(--ink-faint); font-size: 15px; text-align: start; }
 .share-toggle--on { color: var(--ink); }
 .share-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .share-dollar { flex: none; font-size: 12.5px; }
@@ -388,7 +393,7 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 .counterparty-chip {
   flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
   padding: 11px 13px; border-radius: 16px; border: 1px solid var(--border-mid); background: var(--card);
-  text-align: left; min-width: 0;
+  text-align: start; min-width: 0;
 }
 .counterparty-chip span:first-child { font-size: 14px; }
 .counterparty-chip span:last-child { font-size: 12.5px; color: var(--ink-faint); }
@@ -436,14 +441,14 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 .request-name { font-size: 16px; line-height: 1.25; }
 .request-email { margin-top: 3px; font-size: 12.5px; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .approve-btn { flex: none; height: 38px; padding: 0 16px; border: 0; border-radius: 99px; background: var(--ink); color: var(--bg); font-size: 14.5px; font-weight: 500; }
-.request-role-row { margin-top: 9px; padding-left: 46px; display: flex; align-items: center; gap: 7px; }
+.request-role-row { margin-top: 9px; padding-inline-start: 46px; display: flex; align-items: center; gap: 7px; }
 .role-pill-btn { height: 28px; padding: 0 11px; border-radius: 99px; border: 1px solid var(--border-mid); background: var(--card); font-size: 12.5px; color: var(--ink); }
 .role-swap-link { border: 0; background: transparent; padding: 0; font-size: 12.5px; color: var(--sage-soft-text); }
-.request-decline-link { margin-left: auto; border: 0; background: transparent; padding: 0; font-size: 12.5px; color: var(--danger-text); }
+.request-decline-link { margin-inline-start: auto; border: 0; background: transparent; padding: 0; font-size: 12.5px; color: var(--danger-text); }
 
 .member-row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 14px 0;
-  border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; cursor: pointer; text-align: left;
+  border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; cursor: pointer; text-align: start;
 }
 .member-name { font-size: 15.5px; line-height: 1.25; color: var(--ink); }
 .member-email { margin-top: 3px; font-size: 12.5px; color: var(--ink-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -453,11 +458,11 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 .hh-footnote { margin-top: 12px; font-size: 12.5px; line-height: 1.5; color: var(--ink-faint); }
 .chevron-right {
   width: 7px; height: 7px; border-right: 1.5px solid var(--border-strong); border-top: 1.5px solid var(--border-strong);
-  transform: rotate(45deg); flex: none; margin-left: 2px;
+  transform: rotate(45deg); flex: none; margin-inline-start: 2px;
 }
 
 .hh-title-row { display: flex; align-items: baseline; gap: 9px; }
-.hh-title-btn { border: 0; background: transparent; padding: 0; cursor: pointer; text-align: left; display: flex; align-items: baseline; gap: 9px; }
+.hh-title-btn { border: 0; background: transparent; padding: 0; cursor: pointer; text-align: start; display: flex; align-items: baseline; gap: 9px; }
 .hh-title { font-family: var(--font-serif); font-size: 32px; line-height: 1.1; color: var(--ink); }
 .hh-rename-hint { font-size: 12.5px; color: var(--sage-soft-text); }
 
@@ -468,7 +473,7 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 
 .former-row {
   width: 100%; display: flex; align-items: center; gap: 12px; padding: 14px 0;
-  border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; cursor: pointer; text-align: left;
+  border: 0; border-bottom: 1px solid var(--border-soft); background: transparent; cursor: pointer; text-align: start;
 }
 .avatar-dashed {
   width: 30px; height: 30px; border-radius: 99px; border: 1px dashed var(--border-mid); color: var(--ink-faint);
@@ -519,3 +524,28 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 }
 .underline-input--serif { font-family: var(--font-serif); font-size: 30px; padding: 4px 0 10px; }
 .invite-role-row { margin-top: 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+/* ==========================================================================
+   Language / direction — everything that differs between en (ltr) and
+   fa (rtl) lives here, and only here. Every rule above this line uses
+   logical properties (margin-inline-*, text-align: start, inset-inline-*)
+   and is direction-agnostic by construction, so it never needs to be
+   touched when a language is added or a direction flips.
+
+   Only two things can't be expressed with logical properties: the
+   CSS-border-triangle chevrons (a literal border-side swap) and the
+   Persian font-family swap. Both are driven by attributes app.js sets
+   once, at the top of render(): document.documentElement.lang/dir.
+   ========================================================================== */
+
+html[lang="fa"] { --font-sans: 'Vazirmatn', sans-serif; }
+
+html[dir="rtl"] .icon-btn .chevron {
+  border-left: 0; border-bottom: 0;
+  border-right: 1.5px solid var(--ink); border-top: 1.5px solid var(--ink);
+}
+
+html[dir="rtl"] .chevron-right {
+  border-right: 0; border-top: 0;
+  border-left: 1.5px solid var(--border-strong); border-bottom: 1.5px solid var(--border-strong);
+}

@@ -5,9 +5,9 @@ from sqlalchemy.orm import Session
 
 from app.auth import hash_password
 from app.database import get_db
-from app.dependencies import get_current_admin, require_household
+from app.dependencies import get_current_admin, get_current_user, require_household
 from app.models import User, UserRole, UserStatus
-from app.schemas import InviteCreate, InviteOut, UserApprove, UserOut, UserUpdate
+from app.schemas import InviteCreate, InviteOut, UserApprove, UserLanguageUpdate, UserOut, UserUpdate
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -46,6 +46,21 @@ def list_former_users(admin: User = Depends(get_current_admin), db: Session = De
         )
         .all()
     )
+
+
+@router.patch("/me/language", response_model=UserOut)
+def update_my_language(
+    payload: UserLanguageUpdate,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Gated at the lowest auth tier (blocks only `removed`) so even a
+    pending user can set their own language and see the pending-approval
+    screen in it."""
+    user.language = payload.language
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.post("/invite", response_model=InviteOut, status_code=status.HTTP_201_CREATED)
