@@ -95,15 +95,16 @@ Built as a single-file vanilla-JS SPA (`app.js`, no framework, no build step), s
 
 ---
 
-## Phase 7 — Per-Household DB Sharding 🔜 Planned (decided, not started)
+## Phase 7 — Per-Household DB Sharding ✅ Done
 
-Originally sketched in Phase 5 as a future option gated on write volume or fault-isolation needs — **now explicitly scheduled** as the prerequisite for Phase 8, not for scaling. Doing it first turns Phase 8's hardest problem (scoping a backup so it can't leak another household's data) into a non-issue: one SQLite file per household means there's nothing else *in* the file to leak.
+Originally sketched in Phase 5 as a future option gated on write volume or fault-isolation needs — scheduled ahead of Phase 8 as its prerequisite, not for scaling. Doing it first turns Phase 8's hardest problem (scoping a backup so it can't leak another household's data) into a non-issue: one SQLite file per household means there's nothing else *in* the file to leak.
 
-Scope, per the Phase 5 estimate (~a day or two of focused work):
-- Split the schema: `users`/`households`/`invites` stay in the shared file; `expenses`/`participants`/`settlements`/`balance_cache` move to one file per `household_id`.
-- Add an LRU-capped engine registry keyed by `household_id`; rewire `get_db()` and the routers that touch per-household tables to resolve through it instead of a single global engine.
-- Migrations become per-file — Alembic needs to run against whichever shard is open, not just the one shared DB.
-- The precondition that makes this cheap is already in place and has been true since Phase 5: every existing query already filters by `household_id`, so no query currently crosses the boundary this split introduces.
+- **Two SQLite files per deployment instead of one**: a shared file (`User`/`Household`/`AppSetting`/`PushSubscription`) plus one file per `household_id` (`Expense`/`ExpenseParticipant`/`Settlement`/`BalanceCache`), created lazily on first per-household access — never at signup time.
+- **Two declarative bases** (`SharedBase`/`HouseholdBase` in `app/database.py`/`app/models.py`), since SQLAlchemy `relationship()` can't span two engines and SQLite can't join across separate files. Cross-boundary foreign keys became plain columns (SQLite wasn't enforcing them anyway); cross-boundary relationships were replaced by a manual fetch-and-stitch — the pattern `app/balances.py::get_balance_summary()` already used pre-split, now applied consistently in `expenses.py`/`balances.py` via `_stitch_expense_users()`.
+- **LRU-capped engine registry** (`app/household_db.py`, cap 128 per the original Phase 5 sizing note) resolves or lazily creates a household's engine, applies the same WAL pragma as the shared DB, and safely evicts idle engines (`Engine.dispose()` doesn't sever an in-flight checked-out connection).
+- **Two independent Alembic streams** (`alembic/shared/`, `alembic/household/`), each with its own `env.py`/`versions/`. `run_migrations()` runs the shared stream once, then walks every existing household file and migrates it to head; a new household file is migrated at creation time via the same household-stream config.
+- **One-time cutover script** (`backend/scripts/split_to_sharded_dbs.py`) for existing installs: backs up the original file, copies each household's rows into its own new file, verifies row counts match before touching anything, and only then drops the moved tables from the shared file via raw SQL — deliberately *not* a routine Alembic migration, since `run_migrations()` runs automatically on every startup and could otherwise destroy live data on a deploy that predates the split.
+- **Verified live**: 59 tests passing (3 new, covering on-disk file isolation, genuine cross-household isolation via a direct second connection, and that the manual name-stitch still reflects live renames); the cutover script exercised against realistic synthetic multi-household data with byte-level row-count verification; a full container restart confirmed both the shared file and per-household files survive with `PRAGMA integrity_check` clean.
 
 ---
 
@@ -122,7 +123,7 @@ What's still genuinely open, sharding aside:
 
 ## Status
 
-**Beta — Phases 1–6 done, with several extras beyond original scope. Phase 7 (sharding) and Phase 8 (backup/restore) planned and sequenced, neither started.**
+**Beta — Phases 1–7 done, with several extras beyond original scope. Phase 8 (backup/restore) planned, blocked on nothing now, not started.**
 
 Deliberately deferred, not blockers:
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.

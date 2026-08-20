@@ -4,17 +4,25 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-from app.config import settings
-from app.database import Base
-import app.models  # noqa: F401  -- populates Base.metadata for autogenerate
+from app.database import HouseholdBase
+import app.models  # noqa: F401  -- populates SharedBase/HouseholdBase metadata for autogenerate
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# Household files are per-household -- there's no single default url like
+# the shared stream has. The caller (app/household_db.py resolving one
+# household's engine, app/migrations.py walking existing files on startup,
+# or the one-time split script) must always set sqlalchemy.url itself
+# before invoking this.
+if not config.get_main_option("sqlalchemy.url"):
+    raise RuntimeError(
+        "alembic/household/env.py requires sqlalchemy.url to be set explicitly "
+        "(there's no single default household database)."
+    )
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-target_metadata = Base.metadata
+target_metadata = HouseholdBase.metadata
 
 
 def run_migrations_offline() -> None:

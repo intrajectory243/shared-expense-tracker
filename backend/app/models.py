@@ -5,7 +5,18 @@ from sqlalchemy import Date, DateTime, Enum, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
-from app.database import Base
+from app.database import HouseholdBase, SharedBase
+
+# Expense/ExpenseParticipant/Settlement/BalanceCache (HouseholdBase) live in a
+# separate SQLite file per household from User/Household/AppSetting/
+# PushSubscription (SharedBase) -- see app/household_db.py. SQLite can't join
+# or enforce a FOREIGN KEY across two files, and a SQLAlchemy relationship()
+# can't span two engines either, so every id column that crosses that
+# boundary below is a plain int, not a ForeignKey, and every relationship
+# that would have crossed it has been removed. Router code fetches the
+# other side's rows itself and stitches them on as plain (unmapped) instance
+# attributes where a response needs them -- app/balances.py's
+# get_balance_summary() already does exactly this and is the template.
 
 
 class UserRole(str, enum.Enum):
@@ -41,18 +52,19 @@ class Currency(str, enum.Enum):
 # amount: a participant with share=2 owes twice as much of the expense as
 # one with share=1. Equal split (the default at creation) is just every
 # tagged participant carrying share=1.
-class ExpenseParticipant(Base):
+class ExpenseParticipant(HouseholdBase):
     __tablename__ = "expense_participants"
 
     expense_id: Mapped[int] = mapped_column(ForeignKey("expenses.id", ondelete="CASCADE"), primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    # Not a ForeignKey -- users.id lives in the shared file. Router code
+    # resolves the User itself and stitches it on as expense.participants.
+    user_id: Mapped[int] = mapped_column(primary_key=True)
     share: Mapped[float] = mapped_column(Float, default=1.0)
 
     expense: Mapped["Expense"] = relationship(back_populates="participant_shares")
-    user: Mapped["User"] = relationship()
 
 
-class Household(Base):
+class Household(SharedBase):
     __tablename__ = "households"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -61,11 +73,11 @@ class Household(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     users: Mapped[list["User"]] = relationship(back_populates="household")
-    expenses: Mapped[list["Expense"]] = relationship(back_populates="household")
-    settlements: Mapped[list["Settlement"]] = relationship(back_populates="household")
+    # No `expenses`/`settlements` relationships -- those tables live in a
+    # separate per-household file now; fetch them via app/household_db.py.
 
 
-class User(Base):
+class User(SharedBase):
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -85,9 +97,8 @@ class User(Base):
     household_id: Mapped[int | None] = mapped_column(ForeignKey("households.id"), nullable=True)
     household: Mapped[Household | None] = relationship(back_populates="users")
 
-    expenses_paid: Mapped[list["Expense"]] = relationship(
-        foreign_keys="Expense.payer_id", back_populates="payer"
-    )
+    # No `expenses_paid` relationship -- Expense lives in a separate
+    # per-household file now.
 
     @property
     def is_approved(self) -> bool:
@@ -102,16 +113,22 @@ class User(Base):
         return self.invite_token is not None
 
 
-class Expense(Base):
+class Expense(HouseholdBase):
     __tablename__ = "expenses"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    household_id: Mapped[int] = mapped_column(ForeignKey("households.id"), index=True)
-    payer_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # None of these three are ForeignKeys -- households.id and users.id both
+    # live in the shared file. Router code resolves them itself and stitches
+    # the results on as expense.household_id/.payer/.created_by/.participants
+    # (the id columns already carry the plain int; .payer etc. are set as
+    # plain instance attributes, not mapped columns -- see app/balances.py's
+    # get_balance_summary() for the established pattern).
+    household_id: Mapped[int] = mapped_column(index=True)
+    payer_id: Mapped[int] = mapped_column()
     # Who actually entered this record -- may differ from payer_id, since any
     # household member can log an expense on someone else's behalf. Always
     # set server-side from the authenticated user; never client-supplied.
-    created_by_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    created_by_id: Mapped[int] = mapped_column()
 
     amount: Mapped[float] = mapped_column(Float)
     description: Mapped[str] = mapped_column(String(255))
@@ -119,37 +136,31 @@ class Expense(Base):
     date: Mapped[date_type] = mapped_column(Date, default=date_type.today)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    household: Mapped[Household] = relationship(back_populates="expenses")
-    payer: Mapped[User] = relationship(foreign_keys=[payer_id], back_populates="expenses_paid")
-    created_by: Mapped[User] = relationship(foreign_keys=[created_by_id])
     participant_shares: Mapped[list["ExpenseParticipant"]] = relationship(
         back_populates="expense", cascade="all, delete-orphan"
     )
 
-    @property
-    def participants(self) -> list[User]:
-        return [ps.user for ps in self.participant_shares]
+    # No `participants` property here anymore (it used to read `ps.user`,
+    # which crosses into the shared file). Router code sets
+    # `expense.participants = [...]` itself after resolving those users.
 
 
-class Settlement(Base):
+class Settlement(HouseholdBase):
     """Records a real-world repayment between two users, used to zero out a balance."""
 
     __tablename__ = "settlements"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    household_id: Mapped[int] = mapped_column(ForeignKey("households.id"), index=True)
-    from_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    to_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # Not ForeignKeys -- see Expense above, same reasoning.
+    household_id: Mapped[int] = mapped_column(index=True)
+    from_user_id: Mapped[int] = mapped_column()
+    to_user_id: Mapped[int] = mapped_column()
     amount: Mapped[float] = mapped_column(Float)
     date: Mapped[date_type] = mapped_column(Date, default=date_type.today)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
-    household: Mapped[Household] = relationship(back_populates="settlements")
-    from_user: Mapped[User] = relationship(foreign_keys=[from_user_id])
-    to_user: Mapped[User] = relationship(foreign_keys=[to_user_id])
 
-
-class BalanceCache(Base):
+class BalanceCache(HouseholdBase):
     """One cached GET /balances response per household, invalidated (deleted)
     by any write that could change it -- new expense, share edit, deleted
     expense, or settlement. A miss just recomputes and refills it, so this
@@ -157,12 +168,14 @@ class BalanceCache(Base):
 
     __tablename__ = "balance_cache"
 
-    household_id: Mapped[int] = mapped_column(ForeignKey("households.id", ondelete="CASCADE"), primary_key=True)
+    # Not a ForeignKey (see Expense above) -- and redundant with the file
+    # boundary anyway, since a household's file only ever holds its own cache row.
+    household_id: Mapped[int] = mapped_column(primary_key=True)
     payload: Mapped[str] = mapped_column(Text)
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class AppSetting(Base):
+class AppSetting(SharedBase):
     """Small instance-level key/value store for config generated at runtime
     (currently just the VAPID keypair for web push). Keeps a fresh
     self-hosted install zero-config while still persisting across restarts,
@@ -174,7 +187,7 @@ class AppSetting(Base):
     value: Mapped[str] = mapped_column(Text)
 
 
-class PushSubscription(Base):
+class PushSubscription(SharedBase):
     """A browser's Web Push endpoint for one user. A user can have several
     (one per browser/device); an endpoint is unique across the instance, so
     re-subscribing the same browser under a different account just moves it."""
@@ -188,4 +201,5 @@ class PushSubscription(Base):
     auth: Mapped[str] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Stays a real relationship -- User is shared too, so this is same-file.
     user: Mapped["User"] = relationship()

@@ -5,6 +5,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     database_url: str = "sqlite:///./expense_tracker.db"
+    # Directory holding one SQLite file per household (Expense/ExpenseParticipant/
+    # Settlement/BalanceCache -- see app/household_db.py). Defaults to a
+    # "households/" sibling next to database_url's own file so both live in the
+    # same Docker-mounted volume with zero extra config.
+    household_db_dir: str | None = None
     secret_key: str = "dev-secret-key-change-me"
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     algorithm: str = "HS256"

@@ -9,8 +9,10 @@ services:
       - ./backend/app:/app/backend/app:ro
       - ./backend/tests:/app/backend/tests:ro
       - ./backend/pytest.ini:/app/backend/pytest.ini:ro
+      - ./backend/scripts:/app/backend/scripts:ro
       - ./backend/alembic:/app/backend/alembic
       - ./backend/alembic.ini:/app/backend/alembic.ini:ro
+      - ./backend/alembic_household.ini:/app/backend/alembic_household.ini:ro
     environment:
       - DATABASE_URL=sqlite:////app/backend/data/expense_tracker.db
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

@@ -1,3 +1,8 @@
+"""The *shared* database -- one file for the whole instance, holding User,
+Household, AppSetting, and PushSubscription. Expense/ExpenseParticipant/
+Settlement/BalanceCache live in separate per-household files instead (see
+app/household_db.py); this module only ever talks to the shared one."""
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
@@ -19,8 +24,16 @@ if is_sqlite:
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-class Base(DeclarativeBase):
+class SharedBase(DeclarativeBase):
     pass
+
+
+class HouseholdBase(DeclarativeBase):
+    """Separate declarative base (separate .metadata) for the four models
+    that live in per-household files instead of the shared one. Kept here
+    rather than in household_db.py so app/models.py has a single import
+    site for both bases, and to avoid a models<->household_db circular
+    import (household_db.py needs the models to run migrations/create_all)."""
 
 
 def get_db():

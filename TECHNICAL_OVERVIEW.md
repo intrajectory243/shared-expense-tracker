@@ -84,30 +84,38 @@ Two things this pattern had to specifically guard against, both hit as real bugs
 
 ## Data model
 
+Split across two SQLite files since Phase 7 (roadmap) — see "Multi-database
+architecture" below for why and how. Logically the shape is unchanged; the
+diagram below shows the conceptual relationships, but `Expense`/
+`ExpenseParticipant`/`Settlement`/`BalanceCache` live in a separate
+per-household file from `User`/`Household`, so anything crossing that
+boundary (dashed below) is a plain int column resolved in application code,
+not a SQLAlchemy `relationship()` or an enforced `FOREIGN KEY`.
+
 ```
-Household 1───* User
-Household 1───* Expense
-Household 1───* Settlement
-Household 1───1 BalanceCache
-Expense   1───* ExpenseParticipant *───1 User
-Settlement  *───1 User (from)
-Settlement  *───1 User (to)
-User        *───1 User (payer / created_by on Expense)
-PushSubscription *───1 User
+Household 1───* User                          } shared file
+Household 1┄┄┄* Expense                        } per-household file,
+Household 1┄┄┄* Settlement                     } one per household_id
+Household 1┄┄┄1 BalanceCache                   }
+Expense   1───* ExpenseParticipant ┄┄┄1 User    (Expense↔Participant: same file. ↔User: crosses)
+Settlement  ┄┄┄1 User (from)
+Settlement  ┄┄┄1 User (to)
+User        ┄┄┄1 User (payer / created_by on Expense)
+PushSubscription 1───* User                     } shared file
 ```
 
-| Table | Key columns | Notes |
-|---|---|---|
-| `households` | `id`, `name` | Root of all scoping — every query filters by `household_id` |
-| `users` | `email` (unique), `password_hash`, `role` (admin/member), `status` (pending/approved/moved_out/removed), `household_id`, `invite_token` | |
-| `expenses` | `payer_id`, `created_by_id`, `amount`, `description`, `category`, `date` | `payer` and `created_by` are separate — any member can log an expense on someone else's behalf |
-| `expense_participants` | `expense_id`, `user_id`, `share` (float, default 1.0) | Association **object** (not a plain `secondary=` table) specifically because `share` needs to live on the join row; composite PK on `(expense_id, user_id)` |
-| `settlements` | `from_user_id`, `to_user_id`, `amount`, `date` | Real-world repayment record, separate from `Expense` |
-| `balance_cache` | `household_id` (PK), `payload` (JSON text), `computed_at` | One row per household; see Caching below |
-| `app_settings` | `key` (PK), `value` | Generic instance-level KV store; currently holds the auto-generated VAPID keypair |
-| `push_subscriptions` | `user_id`, `endpoint` (unique), `p256dh`, `auth` | One row per browser/device subscribed to push |
+| Table | Lives in | Key columns | Notes |
+|---|---|---|---|
+| `households` | shared | `id`, `name` | Root of all scoping — every query filters by `household_id` |
+| `users` | shared | `email` (unique), `password_hash`, `role` (admin/member), `status` (pending/approved/moved_out/removed), `household_id`, `invite_token` | |
+| `expenses` | per-household | `payer_id`, `created_by_id`, `amount`, `description`, `category`, `date` | `payer` and `created_by` are separate — any member can log an expense on someone else's behalf. `household_id`/`payer_id`/`created_by_id` are plain ints, not FKs (see below) |
+| `expense_participants` | per-household | `expense_id`, `user_id`, `share` (float, default 1.0) | Association **object** (not a plain `secondary=` table) specifically because `share` needs to live on the join row; composite PK on `(expense_id, user_id)`. `expense_id` stays a real FK (same file); `user_id` is a plain int (User is in the shared file) |
+| `settlements` | per-household | `from_user_id`, `to_user_id`, `amount`, `date` | Real-world repayment record, separate from `Expense` |
+| `balance_cache` | per-household | `household_id` (PK), `payload` (JSON text), `computed_at` | One row per household; see Caching below |
+| `app_settings` | shared | `key` (PK), `value` | Generic instance-level KV store; currently holds the auto-generated VAPID keypair |
+| `push_subscriptions` | shared | `user_id`, `endpoint` (unique), `p256dh`, `auth` | One row per browser/device subscribed to push |
 
-**Membership lifecycle** is more than pending/approved: **moved_out** keeps sign-in but blocks logging new expenses (history/settle-up still work — their existing balance doesn't just disappear); **removed** blocks sign-in outright, even on an already-issued token (checked in `get_current_user`, not just at login). Both are reversible. A household always keeps at least one admin — enforced as a guard rail on every role/status change.
+**Membership lifecycle** is more than pending/approved: **moved_out** keeps sign-in but blocks logging new expenses (history/settle-up still work — their existing balance doesn't just disappear); **removed** blocks sign-in outright, even on an already-issued token (checked in `get_current_user`, not just at login). Both are reversible. A household always keeps at least one admin — enforced as a guard rail on every role/status change. The `User` hard-delete path (`DELETE /users/{id}`) only ever applies to still-pending requests, which by definition have no expense rows yet — the only case where losing the old cross-file `ON DELETE CASCADE` into `expense_participants` would otherwise matter.
 
 ---
 
@@ -130,7 +138,7 @@ First-ever signup on a fresh instance auto-bootstraps as an approved admin (`BOO
 ## Performance engineering
 
 ### N+1 query fix
-`compute_net_balances()` and the expense list/detail endpoints originally lazy-loaded `participant_shares` per expense — fine at a handful of expenses, but each additional expense meant one more round trip. Fixed with `selectinload(Expense.participant_shares)` (and a nested `.selectinload(ExpenseParticipant.user)` for serialization), collapsing per-expense queries into a fixed small number regardless of expense count.
+`compute_net_balances()` and the expense list/detail endpoints originally lazy-loaded `participant_shares` per expense — fine at a handful of expenses, but each additional expense meant one more round trip. Fixed with `selectinload(Expense.participant_shares)`, collapsing that part into a fixed small number of queries regardless of expense count. Resolving each participant's `User` (needed for `ExpenseOut.participants`) is a separate single batched query against the shared file — `_stitch_expense_users()` in `routers/expenses.py` collects every needed user id across the whole result set first, then does one `User.id.in_(...)` lookup, not one per expense (see "Multi-database architecture" below for why this became a manual step instead of a relationship).
 
 ### Balance cache — invalidate-on-write
 `balance_cache` holds one row per household: the JSON-serialized output of the last `get_balance_summary()` call. Any write that could change a balance (new expense, share edit, deleted expense, settlement) deletes that household's row **before** committing, in the same transaction — so invalidation can never succeed or fail independently of the write that made it necessary. A cache miss just recomputes and refills.
@@ -140,9 +148,17 @@ First-ever signup on a fresh instance auto-bootstraps as an approved admin (`BOO
 ### WAL mode
 `PRAGMA journal_mode=WAL` (set on every connection in `database.py`) lets reads proceed without blocking on a concurrent writer and vice versa, replacing SQLite's default rollback-journal locking. Verified via stress test to comfortably cover 1000 households × 5 members (write volume stays well under 1/sec averaged, bursts clear in well under 100ms) with no further DB work needed at that scale.
 
+### Multi-database architecture (roadmap Phase 7)
+One SQLite file per household for `expenses`/`expense_participants`/`settlements`/`balance_cache`, separate from the shared file holding `users`/`households`/`app_settings`/`push_subscriptions` (see the Data model table above for which table lives where). Originally scoped as a scaling option gated on write volume; actually built as a prerequisite for admin backup/restore (roadmap Phase 8) instead — with each household's data already isolated to its own file, "back up a household" is just "copy that file," with no risk of one household's backup leaking another's data the way a raw copy of one shared file would.
+
+- **`app/database.py`** — `SharedBase`/`HouseholdBase`, two separate declarative bases (two separate `.metadata`s) so the ORM keeps a single ordinary look while ~~one~~ two engines back it.
+- **`app/household_db.py`** — an LRU-capped registry (`household_id -> Engine`, cap 128) that lazily creates and migrates a household's file the first time anything asks for it, and disposes evicted engines safely (an in-flight request's checked-out connection still finishes normally — `Engine.dispose()` doesn't sever it).
+- **Two independent Alembic streams** — `alembic/shared/` and `alembic/household/`, each with its own `env.py`/`versions/`, both still using `render_as_batch=True`. `app/migrations.py` runs the shared stream once on startup (as before) and walks any existing household files to catch them up; a brand-new household file gets migrated to head at creation time instead.
+- **No cross-file relationships or FKs** — SQLite can't join or enforce a `FOREIGN KEY` across two files, and a SQLAlchemy `relationship()` can't span two engines. Every id column that used to cross the boundary (`Expense.payer_id`, `ExpenseParticipant.user_id`, `Settlement.from_user_id`/`to_user_id`) is a plain int now; router code resolves the `User` side itself in one batched shared-DB query and stitches it on as a plain instance attribute before handing the object to its Pydantic response model (`app/balances.py::get_balance_summary()` was already doing exactly this for balance names before the split — it's the template the rest followed).
+- **One-time cutover** — `backend/scripts/split_to_sharded_dbs.py`, hand-run once per install upgrading from the single-file layout: backs up the original file, copies each household's rows into its own new file, verifies row counts match, and only then drops the moved tables from the shared file (deliberately raw SQL there, not a migration, so a routine `alembic upgrade head` can never do that drop by accident before the copy step has actually run).
+
 ### What's deliberately *not* built yet
-- **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not worth doing until SQLite's single-writer model is an actual bottleneck.
-- **Per-household DB sharding** (one SQLite file per household) — viable if write volume ever grows ~2 orders of magnitude beyond the WAL-mode headroom above. Kept open at zero cost today: every query already filters by `household_id`, which is the invariant that makes sharding possible later.
+- **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not worth doing until SQLite's single-writer model is an actual bottleneck. (Per-household sharding above is SQLite-specific — a Postgres migration would need its own multi-tenancy story if it ever happens.)
 
 ---
 

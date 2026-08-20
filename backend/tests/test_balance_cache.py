@@ -1,4 +1,4 @@
-from app.database import SessionLocal
+from app.household_db import household_session
 from app.models import BalanceCache
 
 
@@ -39,7 +39,9 @@ def setup_household(client, n_members=1, household_name="Roommates"):
 
 
 def cache_rows(household_id):
-    db = SessionLocal()
+    # BalanceCache lives in that household's own file now (roadmap Phase 7),
+    # not the shared SessionLocal.
+    db = household_session(household_id)
     try:
         return db.query(BalanceCache).filter(BalanceCache.household_id == household_id).all()
     finally:

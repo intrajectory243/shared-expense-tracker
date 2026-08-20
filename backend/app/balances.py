@@ -23,7 +23,10 @@ from app.schemas import BalanceEntry, BalanceSummary, DebtEntry
 EPSILON = 0.005  # sub-cent noise from float division; ignore balances this small
 
 
-def compute_net_balances(db: Session, household_id: int) -> dict[int, float]:
+def compute_net_balances(hh_db: Session, household_id: int) -> dict[int, float]:
+    """Only touches Expense/ExpenseParticipant/Settlement -- all three live
+    in the household file, so this needs just the one (household-scoped)
+    session, unlike get_balance_summary below which also needs User names."""
     net: dict[int, float] = defaultdict(float)
 
     # participant_shares is lazy by default -- without eager-loading it here,
@@ -31,7 +34,7 @@ def compute_net_balances(db: Session, household_id: int) -> dict[int, float]:
     # (an N+1 that's invisible at a handful of expenses but costs seconds of
     # round-trip overhead once a household has hundreds+).
     expenses = (
-        db.query(Expense)
+        hh_db.query(Expense)
         .filter(Expense.household_id == household_id)
         .options(selectinload(Expense.participant_shares))
         .all()
@@ -45,7 +48,7 @@ def compute_net_balances(db: Session, household_id: int) -> dict[int, float]:
         for ps in shares:
             net[ps.user_id] -= expense.amount * (ps.share / total_weight)
 
-    settlements = db.query(Settlement).filter(Settlement.household_id == household_id).all()
+    settlements = hh_db.query(Settlement).filter(Settlement.household_id == household_id).all()
     for settlement in settlements:
         net[settlement.from_user_id] += settlement.amount
         net[settlement.to_user_id] -= settlement.amount
@@ -80,8 +83,12 @@ def simplify_debts(net: dict[int, float]) -> list[tuple[int, int, float]]:
     return transactions
 
 
-def get_balance_summary(db: Session, household_id: int) -> BalanceSummary:
-    net = compute_net_balances(db, household_id)
+def get_balance_summary(hh_db: Session, db: Session, household_id: int) -> BalanceSummary:
+    """The template for stitching household-file data with shared-file
+    User names -- every other per-household route that needs a name
+    alongside an expense/settlement follows this same two-query,
+    combine-in-Python pattern (see app/routers/expenses.py)."""
+    net = compute_net_balances(hh_db, household_id)
     users = {u.id: u for u in db.query(User).filter(User.household_id == household_id).all()}
 
     balances = [
@@ -106,24 +113,24 @@ def get_balance_summary(db: Session, household_id: int) -> BalanceSummary:
     return BalanceSummary(balances=balances, settlements_to_make=debts)
 
 
-def get_cached_balance_summary(db: Session, household_id: int) -> BalanceSummary:
+def get_cached_balance_summary(hh_db: Session, db: Session, household_id: int) -> BalanceSummary:
     """Same result as get_balance_summary, but served from balance_cache when
     present. A cache row only ever holds the output of a real get_balance_summary
     call -- there's no separate update path that could drift from it, so a hit
     is always exactly what a fresh computation would have returned."""
-    cached = db.get(BalanceCache, household_id)
+    cached = hh_db.get(BalanceCache, household_id)
     if cached is not None:
         return BalanceSummary.model_validate_json(cached.payload)
 
-    summary = get_balance_summary(db, household_id)
-    db.merge(BalanceCache(household_id=household_id, payload=summary.model_dump_json()))
-    db.commit()
+    summary = get_balance_summary(hh_db, db, household_id)
+    hh_db.merge(BalanceCache(household_id=household_id, payload=summary.model_dump_json()))
+    hh_db.commit()
     return summary
 
 
-def invalidate_balance_cache(db: Session, household_id: int) -> None:
+def invalidate_balance_cache(hh_db: Session, household_id: int) -> None:
     """Call before committing any write that could change a household's balance
     (new/edited/deleted expense, new settlement). Deliberately doesn't commit --
     it rides along in the caller's own transaction so the invalidation can never
     succeed or fail independently of the write that made it necessary."""
-    db.query(BalanceCache).filter(BalanceCache.household_id == household_id).delete()
+    hh_db.query(BalanceCache).filter(BalanceCache.household_id == household_id).delete()

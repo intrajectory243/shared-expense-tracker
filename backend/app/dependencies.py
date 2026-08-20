@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.auth import decode_access_token
 from app.database import get_db
+from app.household_db import household_session
 from app.models import User, UserStatus
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -65,3 +66,18 @@ def get_current_admin(user: User = Depends(get_current_active_user)) -> User:
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return user
+
+
+def get_household_db(user: User = Depends(require_household)):
+    """Session for the current user's household file (Expense/
+    ExpenseParticipant/Settlement/BalanceCache). Deliberately built on
+    require_household rather than get_current_active_user -- a moved_out
+    member can still read balances/history/settle up, so the *session*
+    shouldn't be gated any tighter than "has a household"; routes that need
+    the stricter "still an active member" check (e.g. logging a new
+    expense) already declare that separately via get_current_active_user."""
+    db = household_session(user.household_id)
+    try:
+        yield db
+    finally:
+        db.close()
