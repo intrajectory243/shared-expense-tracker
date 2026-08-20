@@ -115,6 +115,19 @@ def household_session(household_id: int) -> Session:
     return session_local()
 
 
+def evict_household(household_id: int) -> None:
+    """Drop and dispose one household's engine, if open (roadmap Phase 8:
+    called by restore right before the file underneath it gets swapped out,
+    so no pooled connection is left holding stale content or cached WAL
+    state). A no-op if that household has no open engine -- restoring a
+    household nothing has touched yet since the last restart is fine."""
+    with _lock:
+        entry = _registry.pop(household_id, None)
+    if entry is not None:
+        engine, _session_local = entry
+        engine.dispose()
+
+
 def reset_registry_for_tests() -> None:
     """Test-only: dispose every open household engine and forget them, so a
     fresh test doesn't reuse a connection pool pointed at a file the test

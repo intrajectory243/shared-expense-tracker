@@ -19,37 +19,62 @@ def signup(payload: UserSignup, db: Session = Depends(get_db)):
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    household = None
-    if payload.household_name:
-        household = Household(name=payload.household_name, currency=payload.household_currency)
-        db.add(household)
-        db.flush()
-    elif payload.household_id:
-        household = db.query(Household).filter(Household.id == payload.household_id).first()
-        if not household:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Household not found")
-
+    # A household restore (roadmap Phase 8) may have already created an
+    # unclaimed stub at this exact id (uuid5 is deterministic on email) for
+    # a user this instance didn't know yet. Claim it in place -- fill in
+    # the real name/password on that same row -- rather than inserting a
+    # second row at an id that's already taken; every expense/settlement
+    # that already pointed at this id (via the stub) stays attached, and
+    # now resolves to the real name through the usual stitch. A claim
+    # never creates or joins a household from payload -- the stub's
+    # household_id is already the one its restored history actually lives
+    # in, so payload.household_name/household_id are ignored entirely for
+    # this branch (and never touched, so nothing gets created/looked up).
+    uid = user_uuid(payload.email)
+    stub = db.get(User, uid)
     is_first_user = db.query(User).count() == 0
-    user = User(
-        id=user_uuid(payload.email),
-        email=payload.email,
-        password_hash=hash_password(payload.password),
-        name=payload.name,
-        language=payload.language,
-        household_id=household.id if household else None,
-        # First user on a fresh instance bootstraps as an approved admin so
-        # a self-hosted install is usable immediately (Phase 2 auth notes).
-        role=UserRole.admin if (is_first_user and settings.bootstrap_admin) else UserRole.member,
-        status=UserStatus.approved if (is_first_user and settings.bootstrap_admin) else UserStatus.pending,
-    )
-    db.add(user)
+    new_status = UserStatus.approved if (is_first_user and settings.bootstrap_admin) else UserStatus.pending
+
+    if stub is not None and stub.status == UserStatus.unclaimed:
+        user = stub
+        user.email = payload.email
+        user.password_hash = hash_password(payload.password)
+        user.name = payload.name
+        user.language = payload.language
+        user.status = new_status
+        household = db.get(Household, user.household_id) if user.household_id else None
+    else:
+        household = None
+        if payload.household_name:
+            household = Household(name=payload.household_name, currency=payload.household_currency)
+            db.add(household)
+            db.flush()
+        elif payload.household_id:
+            household = db.query(Household).filter(Household.id == payload.household_id).first()
+            if not household:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Household not found")
+
+        user = User(
+            id=uid,
+            email=payload.email,
+            password_hash=hash_password(payload.password),
+            name=payload.name,
+            language=payload.language,
+            household_id=household.id if household else None,
+            # First user on a fresh instance bootstraps as an approved admin
+            # so a self-hosted install is usable immediately (Phase 2 auth
+            # notes).
+            role=UserRole.admin if (is_first_user and settings.bootstrap_admin) else UserRole.member,
+            status=new_status,
+        )
+        db.add(user)
     db.commit()
     db.refresh(user)
 
     if user.status == UserStatus.pending and household is not None:
         admin_ids = [
-            uid
-            for (uid,) in db.query(User.id)
+            aid
+            for (aid,) in db.query(User.id)
             .filter(
                 User.household_id == household.id, User.role == UserRole.admin, User.status == UserStatus.approved
             )

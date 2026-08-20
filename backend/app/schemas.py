@@ -92,6 +92,12 @@ class HouseholdUpdate(BaseModel):
     currency: Currency | None = None
 
 
+class RestoreSummary(BaseModel):
+    expenses_restored: int
+    settlements_restored: int
+    unclaimed_users_created: int
+
+
 # ---- Expenses ----
 
 class ExpenseCreate(BaseModel):

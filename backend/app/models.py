@@ -31,6 +31,13 @@ class UserStatus(str, enum.Enum):
     # the balance math either way -- these two only differ in sign-in access.
     moved_out = "moved_out"  # can still sign in: read balance/history, settle up, but not log/be tagged on new expenses
     removed = "removed"  # sign-in refused entirely, including on an already-issued token
+    # Placeholder created by a household restore (roadmap Phase 8) for a user
+    # id the restored file references that this instance doesn't know yet --
+    # no usable password, can't sign in. Claimed automatically the moment
+    # someone signs up with the email that hashes to this same id (see
+    # app/routers/auth.py::signup) -- their real name/password fill in this
+    # same row rather than a new one, so existing history stays attached.
+    unclaimed = "unclaimed"
 
 
 class Language(str, enum.Enum):

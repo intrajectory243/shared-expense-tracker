@@ -108,22 +108,24 @@ Originally sketched in Phase 5 as a future option gated on write volume or fault
 
 ---
 
-## Phase 8 — Admin Backup & Restore 🔜 Planned (blocked on Phase 7)
+## Phase 8 — Admin Backup & Restore ⚙️ Backend done, UI not started
 
 Requested by the admin persona: a way to export a household's data and bring it back later (self-host migration, accidental-deletion recovery, or just peace of mind).
 
-Building this **after** Phase 7 lands changes the shape of the feature entirely: with the household already isolated to its own SQLite file, backup is just "download that file" and restore is "upload a file back into that slot" — no bespoke JSON export/import format, no filtering logic, no cross-household leak risk to design around.
+Landing after Phase 7 (household sharding) and the user-UUID migration changed the shape of the feature entirely: with a household already isolated to its own SQLite file and user ids collision-safe across instances, backup is literally "download that file" and restore is "upload a file back into that slot" — no bespoke JSON export/import format, no filtering logic, no cross-household leak risk to design around.
 
-What's still genuinely open, sharding aside:
-- **Restore safety:** swapping a live household's DB file out from under an open connection needs care — likely evict/close that household's engine from the LRU registry first, write the new file, then let the next request re-open it. Needs a confirmation step at minimum; a preview/dry-run would be nicer but isn't required to ship a first version.
-- **Who can restore:** household admin restoring their own household's file is the safe, bounded case. A full-instance restore (every household at once) is a different, higher-privilege operation and probably belongs to the self-hoster, not any household admin — worth deciding explicitly rather than defaulting into it.
-- Its own UI (export/import buttons, confirmation dialog, result toast) joins the i18n copy backlog once built — same pattern as any other new unmocked screen.
+- **`GET /households/{id}/export`** — admin-only, own household only. A plain file copy would risk missing rows still sitting in the WAL sidecar (household files run in WAL mode), so this uses SQLite's online backup API to produce a point-in-time-consistent snapshot, streamed back and self-deleted after the response.
+- **`POST /households/{id}/restore`** — admin-only, own household only. Validates the upload (integrity check, must already carry household-stream migration history — a blank or unrelated SQLite file is rejected, not silently accepted), upgrades it to the current schema if it's an older export, rewrites every row's `household_id` to the target household (this is what makes "restore my own backup" and "migrate this household to a new instance" the same code path), backs up the current file first unconditionally, evicts the household's LRU-registry engine before the atomic swap, and clears the stale WAL sidecars + cached balance afterward.
+- **Unclaimed-stub identity model** (the piece that needed real design, captured in a project memory before implementation): a restored file can reference a user id this instance doesn't know — restore never force-creates a real account for them. It creates an `unclaimed` stub (placeholder name, unusable password) instead, which renders correctly everywhere by construction (balances, expense history) since the name-stitch pattern already reads whatever user row it finds. If that person later signs up here with the email that hashes to the same id, `POST /auth/signup` **claims** the stub in place — same row, no duplicate, every prior expense/settlement picks up their real name automatically.
+- **69 tests passing** (9 new), plus a live round-trip smoke test in the Docker dev container: export → mutate → restore → confirm the mutation is gone and the exported state is back, WAL/shm sidecars and the `.pre-restore-backup` file left in the expected state, `PRAGMA integrity_check` clean.
+- **Not yet built:** the frontend (export/import buttons, confirmation dialog, result toast) — deliberately deferred, same pattern as any other new unmocked screen joining the i18n copy backlog once built. Usable today via `/docs` or curl.
+- **Explicitly out of scope for this pass:** a full-instance restore (every household at once) is a different, higher-privilege operation belonging to the self-hoster, not any household admin — not built, not needed for the recovery/migration use cases this shipped for.
 
 ---
 
 ## Status
 
-**Beta — Phases 1–7 done, with several extras beyond original scope. Phase 8 (backup/restore) planned, blocked on nothing now, not started.**
+**Beta — Phases 1–7 done, with several extras beyond original scope. Phase 8 (backup/restore) backend done; its UI is the next unbuilt screen.**
 
 Deliberately deferred, not blockers:
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.
