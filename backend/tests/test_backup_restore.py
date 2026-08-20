@@ -198,6 +198,13 @@ def test_restore_creates_unclaimed_stub_for_a_user_this_instance_no_longer_knows
     participant_names = {p["id"]: p["name"] for p in expenses[0]["participants"]}
     assert participant_names[member["id"]] == "Unknown member"
 
+    # GET /users merges unclaimed stubs into the normal member list (the
+    # frontend renders them as a member row with a gap, not a separate
+    # section) -- see app/routers/users.py::list_household_users.
+    users = client.get("/users", headers=auth_headers(hh["admin_token"])).json()
+    stub_out = next(u for u in users if u["id"] == member["id"])
+    assert stub_out["status"] == "unclaimed"
+
 
 def test_signup_claims_an_unclaimed_stub_instead_of_duplicating_it(client):
     hh = setup_household(client, n_members=1)

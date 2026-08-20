@@ -91,6 +91,8 @@ Built as a single-file vanilla-JS SPA (`app.js`, no framework, no build step), s
 - **Frontend architecture:** flat dotted-key dictionary (`en`/`fa`) behind a single `t(key, params)` lookup, `state.lang` synced from the account on login/signup, `document.documentElement.lang`/`dir` driven centrally, and locale-aware number/date formatting (Persian digits + Jalali calendar via `Intl`'s `-u-ca-persian-nu-arabext`).
 - **RTL isolated by construction, not by convention:** almost every rule uses CSS logical properties (`margin-inline-*`, `text-align: start`, etc.), so it's direction-agnostic automatically. The two things that can't be expressed that way (the CSS-border-triangle chevrons, the Persian font swap) are consolidated into one bannered block at the end of `styles.css` — the single place anyone ever needs to touch for a language/direction change.
 - **Full copy pass, not just the mocked screens:** every screen and sheet (signup, home, history, add/settle/edit-shares sheets, household admin, member sheet, invite, rename, menu, accept-invite, the new Language/Currency sheets) and every toast/error message routes through `t()` — roughly 240 keys, in parity across both languages.
+- **Language switch on both entry points (design updated Aug 20):** the chip row was only on sign-up, which left a returning Persian speaker staring at an English sign-in with no way out until after login. Mocked now on sign-in too, same three chips, same position under the tagline (`Phone.dc.html` login screen, `login-fa` in `PhoneIntl.dc.html`). Backend needs nothing — it's a pre-auth client-side preference, same as the signup chips.
+- **Persian screen set completed (design, Aug 20):** `PhoneIntl.dc.html` now covers `login-fa`, `pending-fa`, `menu-fa`, `settle-fa`, `cats-fa`, `household-fa` (including the unclaimed member row) on top of the existing home/add/history/backup screens — so the RTL pass has a reference for every screen the English file has, not just the four originally sketched.
 - **Verified live**, not just statically: drove the running app through a real signup → approval-pending → admin login → add expense → switch language mid-session → history → currency change flow in a headless browser, in both languages, with zero console errors.
 
 ---
@@ -108,7 +110,7 @@ Originally sketched in Phase 5 as a future option gated on write volume or fault
 
 ---
 
-## Phase 8 — Admin Backup & Restore ⚙️ Backend done, UI not started
+## Phase 8 — Admin Backup & Restore ✅ Done
 
 Requested by the admin persona: a way to export a household's data and bring it back later (self-host migration, accidental-deletion recovery, or just peace of mind).
 
@@ -118,14 +120,35 @@ Landing after Phase 7 (household sharding) and the user-UUID migration changed t
 - **`POST /households/{id}/restore`** — admin-only, own household only. Validates the upload (integrity check, must already carry household-stream migration history — a blank or unrelated SQLite file is rejected, not silently accepted), upgrades it to the current schema if it's an older export, rewrites every row's `household_id` to the target household (this is what makes "restore my own backup" and "migrate this household to a new instance" the same code path), backs up the current file first unconditionally, evicts the household's LRU-registry engine before the atomic swap, and clears the stale WAL sidecars + cached balance afterward.
 - **Unclaimed-stub identity model** (the piece that needed real design, captured in a project memory before implementation): a restored file can reference a user id this instance doesn't know — restore never force-creates a real account for them. It creates an `unclaimed` stub (placeholder name, unusable password) instead, which renders correctly everywhere by construction (balances, expense history) since the name-stitch pattern already reads whatever user row it finds. If that person later signs up here with the email that hashes to the same id, `POST /auth/signup` **claims** the stub in place — same row, no duplicate, every prior expense/settlement picks up their real name automatically.
 - **69 tests passing** (9 new), plus a live round-trip smoke test in the Docker dev container: export → mutate → restore → confirm the mutation is gone and the exported state is back, WAL/shm sidecars and the `.pre-restore-backup` file left in the expected state, `PRAGMA integrity_check` clean.
-- **Not yet built:** the frontend (export/import buttons, confirmation dialog, result toast) — deliberately deferred, same pattern as any other new unmocked screen joining the i18n copy backlog once built. Usable today via `/docs` or curl.
-- **Explicitly out of scope for this pass:** a full-instance restore (every household at once) is a different, higher-privilege operation belonging to the self-hoster, not any household admin — not built, not needed for the recovery/migration use cases this shipped for.
+- **Frontend built** from the design handoff (`Phone.dc.html`/`PhoneIntl.dc.html`), pixel-for-pixel where the backend could support it exactly, with two disclosed trims:
+  - **Lives in Menu → Backup**, next to Language and Currency, admin-only — not on the Household screen.
+  - **Export is one dark button** ("Download a copy") with a quiet last-copy line under it (session-only, resets on reload — not a tracked metric).
+  - **Restore is a hold-to-confirm**, not a typed confirmation: file picker → a card showing the picked filename → hold ~600ms (+8% every 45ms) to fire, releasing early cancels instantly.
+  - **File states trimmed from 4 to 3** (none/picked/rejected, dropping the mock's "older export" sage-note state) — the backend's `RestoreSummary` response has no way to signal "this was upgraded from an older schema" before/during upload, so that distinction isn't surfaced; the upgrade itself still happens correctly and silently either way.
+  - **Result is a full-screen summary, not a toast:** "Back as it was." with expense/settlement/people counts and a dashed callout naming anyone unclaimed.
+  - **Unclaimed stubs are tagged inline in the member list** (`GET /users` now includes them alongside approved members) — normal row, `unclaimed` tag where the role chip sits, "no account on this instance yet" in place of the email, excluded from every place that builds a list of taggable/payable people (`activeMembers()` in `app.js`).
+  - Provenance line ("From X, taken Y") and per-unclaimed-person naming in the unclaimed callout are simplified versions of the mock — the frontend doesn't retain the original export's filename/timestamp once picked, and "which users are newly unclaimed" is inferred from the response count rather than tracked individually.
+- **Explicitly out of scope for this pass:** a full-instance restore (every household at once) is a different, higher-privilege operation belonging to the self-hoster, not any household admin.
+
+---
+
+## Phase 9 — Editable Categories 🎨 Designed, not built
+
+Categories have been a hard-coded list (rent, groceries, utilities, household, eating out, transport, other) since Phase 1. Every household that isn't three roommates in Tehran wants different ones — and the list is the one piece of shared vocabulary in the app that users can't touch.
+
+- **Reached from where they're used:** an `edit` chip at the end of the category row in the Add Expense sheet — not buried in Household admin. Editing is a member action, not an admin one; the list is shared, but so is the spending.
+- **Rename is the primary operation, not delete:** renaming a category relabels every expense already filed under it (one row, no migration prompt). This is the answer to "we don't call it Utilities, we call it Bills."
+- **Removal is guarded by usage, not by permission:** a category still on any expense can't be removed — the row shows its usage count (`2 expenses` / `unused`) and the × is disabled with an explanatory toast. Prevents orphaned records without needing a reassign flow.
+- **Add is a single text field + Add button**, duplicate names (case-insensitive) rejected; the new category is auto-selected on the expense being logged.
+- **At least one category always survives** — same guard-rail shape as "a household always keeps one admin."
+- **Backend work this implies (not started):** a `Category` table scoped to `household_id` (respecting the Phase 7 no-cross-household-queries invariant), seeded with the current defaults per household on creation; `Expense.category` moves from a bare string to a category reference or stays a string with a rename cascade — the mock assumes the cascade is invisible to the user either way. Alembic migration needed to backfill existing households from the hard-coded list. i18n note: the seven defaults are currently translated strings; once user-editable they become user data and stop being translatable — seed them in the household's language at creation and leave them alone.
+- **Mocked in:** `Phone.dc.html` (interactive: rename, add, blocked-remove, usage counts) and `PhoneIntl.dc.html` → `cats-fa`.
 
 ---
 
 ## Status
 
-**Beta — Phases 1–7 done, with several extras beyond original scope. Phase 8 (backup/restore) backend done; its UI is the next unbuilt screen.**
+**Beta — Phases 1–8 done. Phase 9 (editable categories) designed, not built. i18n completion (sign-in language switcher, Persian screen-set spot-check) queued next.**
 
 Deliberately deferred, not blockers:
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.

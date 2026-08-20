@@ -87,6 +87,12 @@ const state = {
   pushEnabled: false,
   draftCurrency: 'toman',
   currencySaving: false,
+  // Roadmap Phase 8 UI (backup/restore).
+  backupFile: null,       // null | 'ok' | 'rejected' -- a picked file's state (see doRestore)
+  backupFileHandle: null, // the real File object once picked
+  holdPct: 0,
+  lastCopy: null,         // display string, e.g. "just now · 96 KB" -- session-only, not persisted
+  restoreResult: null,    // { expenses_restored, settlements_restored, unclaimed_users_created }
 };
 
 // ---------- helpers ----------
@@ -161,6 +167,14 @@ function householdLabel(count) {
 function nameOf(id) {
   const u = state.users.find((x) => x.id === id) || state.former.find((x) => x.id === id);
   return u ? u.name : t('common.someone');
+}
+
+// state.users includes unclaimed stubs (roadmap Phase 8 restore) so their
+// name/balance still render correctly wherever a member is looked up by
+// id -- but they can't be tagged, paid, or shown as an active participant,
+// so anywhere that builds a list of *actionable* people needs this instead.
+function activeMembers() {
+  return state.users.filter((u) => u.status !== 'unclaimed');
 }
 
 function firstName(name) {
@@ -518,6 +532,19 @@ function openMemberSheet(userId) {
   render();
 }
 
+function copySignupLink() {
+  // No special token needed -- the "claim" is just uuid5(email) landing on
+  // the same id the restore already created (see app/routers/auth.py's
+  // signup claim branch). Any signup link works; this is the one on hand.
+  const link = location.origin + '/';
+  state.sheet = null;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(link).catch(() => {});
+  }
+  flash(t('memberSheet.signupLinkCopiedToast'));
+  render();
+}
+
 async function pickMemberRole(role) {
   const selected = findMember(state.selectedMemberId);
   if (!selected || selected.role === role) return;
@@ -583,6 +610,123 @@ async function saveCurrency() {
     flash(e.message || t('toast.couldNotUpdateCurrency'));
   }
   render();
+}
+
+// ---------- backup / restore (roadmap Phase 8) ----------
+
+let holdTimer = null;
+
+function openBackupSheet() {
+  state.backupFile = null;
+  state.backupFileHandle = null;
+  state.holdPct = 0;
+  state.sheet = 'backup';
+  render();
+}
+
+function pickBackupFile() {
+  const input = document.getElementById('backupFileInput');
+  if (input) input.click();
+}
+
+function onBackupFileChosen(file) {
+  if (!file) return;
+  state.backupFileHandle = file;
+  state.backupFile = 'ok';
+  state.holdPct = 0;
+  render();
+}
+
+// Filename the backend suggests via Content-Disposition -- falls back to a
+// generic name only if that header is somehow missing.
+function filenameFromContentDisposition(header) {
+  const match = /filename="?([^";]+)"?/.exec(header || '');
+  return match ? match[1] : 'halves-backup.db';
+}
+
+async function exportBackup() {
+  try {
+    const res = await fetch(`/households/${state.me.household_id}/export`, {
+      headers: { Authorization: 'Bearer ' + state.token },
+    });
+    if (!res.ok) throw new Error(t('toast.couldNotExport'));
+    const blob = await res.blob();
+    const filename = filenameFromContentDisposition(res.headers.get('content-disposition'));
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    state.lastCopy = t('backup.justNow', { size: Math.max(1, Math.round(blob.size / 1024)) });
+    flash(t('backup.savedToast', { filename }));
+    render();
+  } catch (e) {
+    flash(e.message || t('toast.couldNotExport'));
+  }
+}
+
+function startHold() {
+  if (holdTimer || state.backupFile !== 'ok') return;
+  holdTimer = setInterval(() => {
+    const p = (state.holdPct || 0) + 8;
+    if (p >= 100) {
+      clearInterval(holdTimer);
+      holdTimer = null;
+      state.holdPct = 100;
+      render();
+      doRestore();
+    } else {
+      state.holdPct = p;
+      render();
+    }
+  }, 45);
+}
+
+function endHold() {
+  clearInterval(holdTimer);
+  holdTimer = null;
+  if (state.holdPct && state.holdPct < 100) {
+    state.holdPct = 0;
+    render();
+  }
+}
+
+async function doRestore() {
+  const form = new FormData();
+  form.append('file', state.backupFileHandle);
+  try {
+    const res = await fetch(`/households/${state.me.household_id}/restore`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer ' + state.token },
+      body: form,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) {
+      // Not shown to the user (the card always renders a fixed, localized
+      // explanation, not the backend's raw English detail text) -- but the
+      // 400 branch is real and distinct from a network failure below.
+      state.backupFile = 'rejected';
+      state.holdPct = 0;
+      render();
+      return;
+    }
+    state.restoreResult = data;
+    state.sheet = null;
+    state.backupFile = null;
+    state.backupFileHandle = null;
+    state.holdPct = 0;
+    state.route = 'restored';
+    render();
+    await refreshData();
+    render();
+  } catch (e) {
+    state.backupFile = 'rejected';
+    state.holdPct = 0;
+    render();
+  }
 }
 
 // ---------- household rename ----------
@@ -672,7 +816,7 @@ async function submitAcceptInvite() {
 function openAddSheet() {
   state.draft = {
     amount: '', desc: '', category: null,
-    participantIds: state.users.map((u) => u.id),
+    participantIds: activeMembers().map((u) => u.id),
     payerId: state.me.id,
   };
   state.sheet = 'add';
@@ -686,7 +830,7 @@ function toggleDraftPerson(id) {
 }
 
 function cyclePayer() {
-  const ids = state.users.map((u) => u.id);
+  const ids = activeMembers().map((u) => u.id);
   if (!ids.length) return;
   const idx = ids.indexOf(state.draft.payerId);
   state.draft.payerId = ids[(idx + 1) % ids.length];
@@ -968,10 +1112,10 @@ function renderHome() {
   const isEmpty = state.expenses.length === 0;
   const showSettle = !square && debts.length > 0;
   const recent = state.expenses.slice(0, 3);
-  const stackUsers = state.users.slice(0, 4);
+  const stackUsers = activeMembers().slice(0, 4);
   const isMovedOut = state.me.status === 'moved_out';
   const householdName = state.household ? state.household.name : 'this household';
-  const topLabel = isMovedOut ? t('home.pastFlat', { name: escapeHtml(householdName) }) : householdLabel(state.users.length);
+  const topLabel = isMovedOut ? t('home.pastFlat', { name: escapeHtml(householdName) }) : householdLabel(activeMembers().length);
 
   return `
     <div class="screen">
@@ -1126,7 +1270,7 @@ function renderAddSheet() {
       : d.participantIds.length === 1
         ? t('addSheet.hintCarriesAll', { name: nameOf(d.participantIds[0]) })
         : t('addSheet.hintEach', { amount: fmt(amt / d.participantIds.length) });
-  const payer = state.users.find((u) => u.id === d.payerId) || state.me;
+  const payer = activeMembers().find((u) => u.id === d.payerId) || state.me;
 
   return `
     <div class="sheet-overlay" data-action="sheet.close"></div>
@@ -1152,7 +1296,7 @@ function renderAddSheet() {
       <div class="split-block">
         <div class="split-head"><div style="font-size:14.5px" class="muted">${t('addSheet.splitBetween')}</div><div style="font-size:12.5px" class="faint">${splitHint}</div></div>
         <div class="people-row">
-          ${state.users.map((u) => `
+          ${activeMembers().map((u) => `
             <button class="person-chip ${d.participantIds.includes(u.id) ? 'person-chip--active' : ''}" data-action="draft.togglePerson" data-user-id="${u.id}">
               <span class="avatar avatar-sm ${avatarClass(u.id, u.id === state.me.id)}">${initials(u.name)}</span>
               <span>${escapeHtml(u.name)}</span>
@@ -1190,7 +1334,7 @@ function renderEditSharesSheet() {
 
       <div class="split-block">
         <div class="split-head"><div style="font-size:14.5px" class="muted">${t('editShares.shares')}</div><div style="font-size:12.5px" class="faint">${t('editShares.total', { amount: money(es.amount) })}</div></div>
-        ${state.users.map((u) => {
+        ${activeMembers().map((u) => {
           const on = draft[u.id] !== undefined;
           const share = draft[u.id] || 1;
           const dollar = on && totalWeight > 0 ? fmt(es.amount * share / totalWeight) : '';
@@ -1303,6 +1447,12 @@ function renderMenuSheet() {
           <span class="faint" style="font-size:13px">${t(state.pushEnabled ? 'menu.on' : 'menu.off')}</span>
         </button>
       ` : ''}
+      ${isAdmin ? `
+        <button class="menu-row" data-action="menu.openBackup">
+          <span style="flex:1">${t('menu.backup')}</span>
+          <span class="faint" style="font-size:13px">${state.lastCopy ? t('backup.lastCopy', { when: state.lastCopy }) : t('menu.backupNone')}</span>
+        </button>
+      ` : ''}
       <button class="menu-row menu-row--last" data-action="logout">
         <span style="flex:1;color:var(--ink-soft)">${t('menu.signOut')}</span>
       </button>
@@ -1360,8 +1510,104 @@ function renderCurrencySheet() {
   `;
 }
 
+function renderBackupSheet() {
+  const householdName = state.household ? state.household.name : '';
+  const fileName = state.backupFileHandle ? state.backupFileHandle.name : '';
+  const holdLabel = state.holdPct > 0 ? t('backup.holding') : t('backup.hold');
+  const holdLabelColor = state.holdPct > 45 ? 'var(--bg)' : 'var(--ink)';
+
+  return `
+    <div class="sheet-overlay" data-action="sheet.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">${t('backup.title')}</div>
+        <button class="sheet-cancel" data-action="sheet.close">${t('common.done')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:13px;line-height:1.5" class="faint">${t('backup.subhead')}</div>
+
+      <button class="btn-primary backup-download-btn" data-action="backup.export">${t('backup.download')}</button>
+      <div class="backup-last-copy">${state.lastCopy ? t('backup.lastCopy', { when: state.lastCopy }) : t('backup.noCopyYet')}</div>
+
+      <div class="backup-restore-head">
+        <div class="eyebrow">${t('backup.restoreEyebrow')}</div>
+        <div style="font-size:12px" class="faint">${t('backup.adminsOnly')}</div>
+      </div>
+      <div class="backup-restore-warning">${t('backup.restoreWarning', { household: householdName })}</div>
+
+      <input type="file" id="backupFileInput" accept=".db,.sqlite,.sqlite3" style="display:none" />
+
+      ${!state.backupFile ? `
+        <button class="backup-dashed-btn" data-action="backup.pickFile">${t('backup.chooseFile')}</button>
+      ` : state.backupFile === 'rejected' ? `
+        <div class="backup-file-card backup-file-card--rejected">
+          <div class="backup-rejected-title">${t('backup.rejectedTitle')}</div>
+          <div class="backup-rejected-body">${t('backup.rejectedBody')}</div>
+        </div>
+        <button class="btn-secondary" style="margin-top:12px" data-action="backup.pickFile">${t('backup.chooseAnother')}</button>
+        <div class="backup-touched-note">${t('backup.nothingTouched', { household: householdName })}</div>
+      ` : `
+        <div class="backup-file-card">
+          <div class="backup-file-top">
+            <div class="backup-file-name">${escapeHtml(fileName)}</div>
+            <button class="backup-file-change" data-action="backup.pickFile">${t('backup.change')}</button>
+          </div>
+        </div>
+        <button class="backup-hold-btn" id="backupHoldBtn">
+          <div class="backup-hold-fill" style="width:${state.holdPct}%"></div>
+          <div class="backup-hold-label" style="color:${holdLabelColor}">${holdLabel}</div>
+        </button>
+        <div class="backup-hold-footnote">${t('backup.holdFootnote')}</div>
+      `}
+    </div>
+  `;
+}
+
+function renderRestoredScreen() {
+  const r = state.restoreResult || { expenses_restored: 0, settlements_restored: 0, unclaimed_users_created: 0 };
+  const unclaimed = r.unclaimed_users_created || 0;
+  const peopleValue = unclaimed
+    ? t('restored.peopleValueWithUnclaimed', { n: fmt(state.users.length - unclaimed), u: fmt(unclaimed) })
+    : t('restored.peopleValue', { n: fmt(state.users.length) });
+  const newUnclaimed = unclaimed ? state.users.filter((u) => u.status === 'unclaimed').slice(0, unclaimed) : [];
+
+  return `
+    <div class="screen" style="padding:62px 22px 48px">
+      <div class="eyebrow">${t('restored.eyebrow')}</div>
+      <div class="restored-headline">${t('restored.headline')}</div>
+      <div class="restored-provenance">${state.household ? escapeHtml(state.household.name) : ''}</div>
+
+      <div class="restored-card">
+        <div class="restored-row"><div class="restored-row-label">${t('restored.rowExpenses')}</div><div class="restored-row-value tabular">${t('restored.expensesValue', { n: fmt(r.expenses_restored) })}</div></div>
+        <div class="restored-row"><div class="restored-row-label">${t('restored.rowSettlements')}</div><div class="restored-row-value tabular">${t('restored.settlementsValue', { n: fmt(r.settlements_restored) })}</div></div>
+        <div class="restored-row"><div class="restored-row-label">${t('restored.rowPeople')}</div><div class="restored-row-value tabular">${peopleValue}</div></div>
+        <div class="restored-row"><div class="restored-row-label">${t('restored.rowBalance')}</div><div class="restored-row-value">${t('restored.recomputed')}</div></div>
+      </div>
+
+      ${unclaimed ? `
+        <div class="restored-unclaimed-card">
+          ${newUnclaimed.map((u) => `
+            <div class="restored-unclaimed-person">
+              <div class="avatar avatar-30 avatar--unclaimed">${initials(u.name)}</div>
+              <div style="flex:1;min-width:0;font-size:15px">${escapeHtml(u.name)}</div>
+              <div style="font-size:12px" class="faint">${t('member.unclaimed')}</div>
+            </div>
+            <div class="restored-unclaimed-note">${t('restored.unclaimedNote', { name: u.name })}</div>
+          `).join('') || `
+            <div class="restored-unclaimed-title">${unclaimed === 1 ? t('restored.unclaimedTitleOne') : t('restored.unclaimedTitleMany', { n: fmt(unclaimed) })}</div>
+          `}
+        </div>
+      ` : ''}
+
+      <button class="btn-primary restored-btn-primary" data-action="toHome">${t('restored.backToHome')}</button>
+      <button class="btn-secondary restored-btn-secondary" data-action="toHousehold">${t('restored.checkHousehold')}</button>
+    </div>
+  `;
+}
+
 function renderHousehold() {
-  const members = state.users;
+  const members = state.users.filter((m) => m.status !== 'unclaimed');
+  const unclaimedMembers = state.users.filter((m) => m.status === 'unclaimed');
   const pending = state.pending;
   const former = state.former;
   const waitingCount = pending.length;
@@ -1418,7 +1664,7 @@ function renderHousehold() {
       </div>
 
       <div class="hh-section">
-        <div class="hh-section-head"><div class="eyebrow">${t('hhAdmin.members')}</div><div style="font-size:12px" class="faint">${t('hhAdmin.approved', { n: fmt(members.length) })}</div></div>
+        <div class="hh-section-head"><div class="eyebrow">${t('hhAdmin.members')}</div><div style="font-size:12px" class="faint">${unclaimedMembers.length ? t('hhAdmin.approvedAndUnclaimed', { approved: fmt(members.length), n: fmt(unclaimedMembers.length) }) : t('hhAdmin.approved', { n: fmt(members.length) })}</div></div>
         ${members.map((m) => `
           <button class="member-row" data-action="member.open" data-user-id="${m.id}">
             <div class="avatar avatar-30 ${avatarClass(m.id, m.id === state.me.id)}">${initials(m.name)}</div>
@@ -1427,6 +1673,17 @@ function renderHousehold() {
               <div class="member-email">${escapeHtml(m.email)}</div>
             </div>
             <div class="member-role-badge ${m.role === 'admin' ? 'member-role-badge--admin' : 'member-role-badge--member'}">${t(m.role === 'admin' ? 'common.admin' : 'common.member')}</div>
+            <div class="chevron-right"></div>
+          </button>
+        `).join('')}
+        ${unclaimedMembers.map((m) => `
+          <button class="member-row" data-action="member.open" data-user-id="${m.id}">
+            <div class="avatar avatar-30 avatar--unclaimed">${initials(m.name)}</div>
+            <div style="flex:1;min-width:0">
+              <div class="member-name">${escapeHtml(m.name)}</div>
+              <div class="member-email">${t('member.noAccountYet')}</div>
+            </div>
+            <div class="member-role-badge member-role-badge--unclaimed">${t('member.unclaimed')}</div>
             <div class="chevron-right"></div>
           </button>
         `).join('')}
@@ -1457,6 +1714,32 @@ function renderHousehold() {
 function renderMemberSheet() {
   const selected = findMember(state.selectedMemberId);
   if (!selected) return '';
+
+  if (selected.status === 'unclaimed') {
+    return `
+      <div class="sheet-overlay" data-action="sheet.close"></div>
+      <div class="sheet-panel">
+        <div class="sheet-handle"></div>
+        <div class="member-sheet-head">
+          <div class="avatar avatar-38 avatar--unclaimed">${initials(selected.name)}</div>
+          <div style="flex:1;min-width:0">
+            <div class="member-sheet-title">${escapeHtml(selected.name)}</div>
+            <div class="member-sheet-email">${t('member.noAccountYet')}</div>
+          </div>
+          <button class="sheet-cancel" data-action="sheet.close">${t('common.done')}</button>
+        </div>
+
+        <div class="detail-row"><div class="detail-label">${t('memberSheet.standing')}</div><div class="detail-value tabular">${escapeHtml(standingLabel(selected.id))}</div></div>
+        <div class="detail-row"><div class="detail-label">${t('memberSheet.access')}</div><div class="detail-value">${t('memberSheet.noAccountYet')}</div></div>
+
+        <div class="access-actions">
+          <button class="access-action-btn" data-action="member.copySignupLink">${t('memberSheet.copySignupLink')}</button>
+        </div>
+        <div class="detail-note" style="margin-top:12px">${t('memberSheet.unclaimedNote')}</div>
+      </div>
+    `;
+  }
+
   const isActive = selected.status === 'approved';
   const isSelf = selected.id === state.me.id;
   const isLastAdmin = selected.role === 'admin' && selected.status === 'approved' && activeAdminCount() <= 1;
@@ -1600,6 +1883,7 @@ function buildHtml() {
     case 'history': html = renderHistory(); break;
     case 'household': html = renderHousehold(); break;
     case 'accept-invite': html = renderAcceptInvite(); break;
+    case 'restored': html = renderRestoredScreen(); break;
     default: html = renderLoading();
   }
   if (state.sheet === 'add') html += renderAddSheet();
@@ -1611,6 +1895,7 @@ function buildHtml() {
   if (state.sheet === 'rename') html += renderRenameSheet();
   if (state.sheet === 'lang') html += renderLangSheet();
   if (state.sheet === 'currency') html += renderCurrencySheet();
+  if (state.sheet === 'backup') html += renderBackupSheet();
   if (state.toast) html += `<div class="toast">${escapeHtml(state.toast)}</div>`;
   return html;
 }
@@ -1715,6 +2000,10 @@ function handleAction(action, el) {
     case 'member.open': return openMemberSheet(el.dataset.userId);
     case 'member.pickRole': return pickMemberRole(el.dataset.role);
     case 'member.runAccess': return runAccessAction(el.dataset.to, el.dataset.blocked === '1');
+    case 'member.copySignupLink': return copySignupLink();
+    case 'menu.openBackup': return openBackupSheet();
+    case 'backup.export': return exportBackup();
+    case 'backup.pickFile': return pickBackupFile();
     case 'acceptInvite.submit': return submitAcceptInvite();
     case 'acceptInvite.toLogin':
       history.replaceState(null, '', location.pathname);
@@ -1761,6 +2050,23 @@ function initEvents() {
     if (el.dataset.field === 'signup.password') doSignup();
     if (el.dataset.field === 'acceptInvite.password') submitAcceptInvite();
   });
+
+  app.addEventListener('change', (e) => {
+    if (e.target.id === 'backupFileInput') onBackupFileChosen(e.target.files[0]);
+  });
+
+  // Hold-to-restore isn't a click, so it's outside the data-action
+  // dispatcher -- delegated the same way, keyed on the button's id since
+  // it's re-rendered on every state change.
+  app.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('#backupHoldBtn')) startHold();
+  });
+  app.addEventListener('pointerup', (e) => {
+    if (e.target.closest('#backupHoldBtn')) endHold();
+  });
+  app.addEventListener('pointerleave', (e) => {
+    if (e.target.closest && e.target.closest('#backupHoldBtn')) endHold();
+  }, true);
 }
 
 // ---------- boot ----------

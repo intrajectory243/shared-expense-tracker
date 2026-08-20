@@ -23,7 +23,17 @@ def _admin_count(db: Session, household_id: int) -> int:
 
 @router.get("", response_model=list[UserOut])
 def list_household_users(user: User = Depends(require_household), db: Session = Depends(get_db)):
-    return db.query(User).filter(User.household_id == user.household_id, User.status == UserStatus.approved).all()
+    # Includes unclaimed stubs (roadmap Phase 8 restore) alongside approved
+    # members -- the frontend renders them as a normal member row with a
+    # gap, not a separate section, so they belong in this same list.
+    return (
+        db.query(User)
+        .filter(
+            User.household_id == user.household_id,
+            User.status.in_([UserStatus.approved, UserStatus.unclaimed]),
+        )
+        .all()
+    )
 
 
 @router.get("/pending", response_model=list[UserOut])
