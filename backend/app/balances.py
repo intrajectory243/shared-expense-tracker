@@ -23,11 +23,11 @@ from app.schemas import BalanceEntry, BalanceSummary, DebtEntry
 EPSILON = 0.005  # sub-cent noise from float division; ignore balances this small
 
 
-def compute_net_balances(hh_db: Session, household_id: int) -> dict[int, float]:
+def compute_net_balances(hh_db: Session, household_id: int) -> dict[str, float]:
     """Only touches Expense/ExpenseParticipant/Settlement -- all three live
     in the household file, so this needs just the one (household-scoped)
     session, unlike get_balance_summary below which also needs User names."""
-    net: dict[int, float] = defaultdict(float)
+    net: dict[str, float] = defaultdict(float)
 
     # participant_shares is lazy by default -- without eager-loading it here,
     # touching it per expense below turns this into one query per expense
@@ -56,7 +56,7 @@ def compute_net_balances(hh_db: Session, household_id: int) -> dict[int, float]:
     return net
 
 
-def simplify_debts(net: dict[int, float]) -> list[tuple[int, int, float]]:
+def simplify_debts(net: dict[str, float]) -> list[tuple[str, str, float]]:
     """Greedy min-cash-flow: pair largest creditor with largest debtor each round."""
     creditors = [[uid, amt] for uid, amt in net.items() if amt > EPSILON]
     debtors = [[uid, -amt] for uid, amt in net.items() if amt < -EPSILON]

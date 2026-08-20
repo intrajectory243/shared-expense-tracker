@@ -145,7 +145,10 @@ function initials(name) {
 
 function avatarClass(userId, isMe) {
   if (isMe) return 'avatar--me';
-  return PALETTE[Math.abs(userId) % PALETTE.length];
+  // userId is a uuid string, not a number -- sum char codes for a stable pick.
+  let hash = 0;
+  for (const ch of String(userId)) hash = (hash + ch.charCodeAt(0)) | 0;
+  return PALETTE[Math.abs(hash) % PALETTE.length];
 }
 
 function householdLabel(count) {
@@ -754,7 +757,7 @@ async function saveShares() {
   try {
     await api(`/expenses/${es.expenseId}/shares`, {
       method: 'PATCH',
-      body: { participants: entries.map(([userId, share]) => ({ user_id: Number(userId), share })) },
+      body: { participants: entries.map(([userId, share]) => ({ user_id: userId, share })) },
     });
     state.sheet = null;
     state.editSharesSaving = false;
@@ -1701,15 +1704,15 @@ function handleAction(action, el) {
     case 'toHistory': state.sheet = null; state.route = 'history'; return render();
     case 'toHome': state.sheet = null; state.route = 'home'; return render();
     case 'toHousehold': return goHousehold();
-    case 'household.toggleRole': return toggleRequestRole(Number(el.dataset.userId));
-    case 'household.approve': return approveRequest(Number(el.dataset.userId));
-    case 'household.decline': return declineRequest(Number(el.dataset.userId));
+    case 'household.toggleRole': return toggleRequestRole(el.dataset.userId);
+    case 'household.approve': return approveRequest(el.dataset.userId);
+    case 'household.decline': return declineRequest(el.dataset.userId);
     case 'household.openRename': return openRenameSheet();
     case 'household.saveRename': return saveRename();
     case 'household.openInvite': return openInviteSheet();
     case 'invite.pickRole': state.inviteForm.role = el.dataset.role; return render();
     case 'invite.send': return sendInvite();
-    case 'member.open': return openMemberSheet(Number(el.dataset.userId));
+    case 'member.open': return openMemberSheet(el.dataset.userId);
     case 'member.pickRole': return pickMemberRole(el.dataset.role);
     case 'member.runAccess': return runAccessAction(el.dataset.to, el.dataset.blocked === '1');
     case 'acceptInvite.submit': return submitAcceptInvite();
@@ -1718,15 +1721,15 @@ function handleAction(action, el) {
       state.route = 'login';
       return render();
     case 'draft.pickCategory': state.draft.category = el.dataset.cat; return render();
-    case 'draft.togglePerson': return toggleDraftPerson(Number(el.dataset.userId));
+    case 'draft.togglePerson': return toggleDraftPerson(el.dataset.userId);
     case 'draft.cyclePayer': return cyclePayer();
     case 'draft.save': return saveExpense();
     case 'history.editShares': return openEditSharesSheet(Number(el.dataset.expenseId));
-    case 'shares.togglePerson': return toggleShareParticipant(Number(el.dataset.userId));
-    case 'shares.inc': return bumpShare(Number(el.dataset.userId), 1);
-    case 'shares.dec': return bumpShare(Number(el.dataset.userId), -1);
+    case 'shares.togglePerson': return toggleShareParticipant(el.dataset.userId);
+    case 'shares.inc': return bumpShare(el.dataset.userId, 1);
+    case 'shares.dec': return bumpShare(el.dataset.userId, -1);
     case 'shares.save': return saveShares();
-    case 'settle.pick': return pickCounterparty(Number(el.dataset.userId));
+    case 'settle.pick': return pickCounterparty(el.dataset.userId);
     case 'settle.full': { const t = getSettleTarget(); if (t) state.settleDraft.amount = fmt(t.amount); return render(); }
     case 'settle.half': { const t = getSettleTarget(); if (t) state.settleDraft.amount = fmt(t.amount / 2); return render(); }
     case 'settle.confirm': return confirmSettle();

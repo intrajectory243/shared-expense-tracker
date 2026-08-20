@@ -58,7 +58,8 @@ class ExpenseParticipant(HouseholdBase):
     expense_id: Mapped[int] = mapped_column(ForeignKey("expenses.id", ondelete="CASCADE"), primary_key=True)
     # Not a ForeignKey -- users.id lives in the shared file. Router code
     # resolves the User itself and stitches it on as expense.participants.
-    user_id: Mapped[int] = mapped_column(primary_key=True)
+    # String, not int -- User.id is a uuid5(email) string (see app/identity.py).
+    user_id: Mapped[str] = mapped_column(String(36), primary_key=True)
     share: Mapped[float] = mapped_column(Float, default=1.0)
 
     expense: Mapped["Expense"] = relationship(back_populates="participant_shares")
@@ -80,7 +81,11 @@ class Household(SharedBase):
 class User(SharedBase):
     __tablename__ = "users"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    # A deterministic uuid5(email) string, not an autoincrement integer --
+    # see app/identity.py. Callers must pass id= explicitly when creating a
+    # User (app/routers/auth.py, app/routers/users.py's invite_user); there's
+    # no server-side default, since the id depends on the email being set.
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     password_hash: Mapped[str] = mapped_column(String(255))
     name: Mapped[str] = mapped_column(String(120))
@@ -124,11 +129,12 @@ class Expense(HouseholdBase):
     # plain instance attributes, not mapped columns -- see app/balances.py's
     # get_balance_summary() for the established pattern).
     household_id: Mapped[int] = mapped_column(index=True)
-    payer_id: Mapped[int] = mapped_column()
+    # String, not int -- User.id is a uuid5(email) string (see app/identity.py).
+    payer_id: Mapped[str] = mapped_column(String(36))
     # Who actually entered this record -- may differ from payer_id, since any
     # household member can log an expense on someone else's behalf. Always
     # set server-side from the authenticated user; never client-supplied.
-    created_by_id: Mapped[int] = mapped_column()
+    created_by_id: Mapped[str] = mapped_column(String(36))
 
     amount: Mapped[float] = mapped_column(Float)
     description: Mapped[str] = mapped_column(String(255))
@@ -153,8 +159,9 @@ class Settlement(HouseholdBase):
     id: Mapped[int] = mapped_column(primary_key=True)
     # Not ForeignKeys -- see Expense above, same reasoning.
     household_id: Mapped[int] = mapped_column(index=True)
-    from_user_id: Mapped[int] = mapped_column()
-    to_user_id: Mapped[int] = mapped_column()
+    # String, not int -- User.id is a uuid5(email) string (see app/identity.py).
+    from_user_id: Mapped[str] = mapped_column(String(36))
+    to_user_id: Mapped[str] = mapped_column(String(36))
     amount: Mapped[float] = mapped_column(Float)
     date: Mapped[date_type] = mapped_column(Date, default=date_type.today)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -195,7 +202,7 @@ class PushSubscription(SharedBase):
     __tablename__ = "push_subscriptions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
     endpoint: Mapped[str] = mapped_column(String(500), unique=True)
     p256dh: Mapped[str] = mapped_column(String(255))
     auth: Mapped[str] = mapped_column(String(255))

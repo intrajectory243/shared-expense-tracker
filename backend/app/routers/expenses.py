@@ -13,7 +13,7 @@ from app.schemas import ExpenseCreate, ExpenseOut, ExpenseSharesUpdate
 router = APIRouter(prefix="/expenses", tags=["expenses"])
 
 
-def _household_users_by_id(db: Session, household_id: int, user_ids: list[int]) -> dict[int, User]:
+def _household_users_by_id(db: Session, household_id: int, user_ids: list[str]) -> dict[str, User]:
     # Only currently-active members are eligible: someone moved out or
     # removed can't be tagged on (or made payer of) a new expense, though
     # their existing expenses stay untouched.
@@ -50,7 +50,7 @@ def _stitch_expense_users(db: Session, expenses: list[Expense]) -> list[Expense]
     attributes -- Pydantic's from_attributes reads those exactly the same
     way it read relationship-backed ones, so ExpenseOut's shape is
     unchanged. Mirrors app/balances.py's get_balance_summary()."""
-    user_ids: set[int] = set()
+    user_ids: set[str] = set()
     for expense in expenses:
         user_ids.add(expense.payer_id)
         user_ids.add(expense.created_by_id)

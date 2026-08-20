@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.auth import hash_password
 from app.database import get_db
 from app.dependencies import get_current_admin, get_current_user, require_household
+from app.identity import user_uuid
 from app.models import User, UserRole, UserStatus
 from app.schemas import InviteCreate, InviteOut, UserApprove, UserLanguageUpdate, UserOut, UserUpdate
 
@@ -70,6 +71,7 @@ def invite_user(payload: InviteCreate, admin: User = Depends(get_current_admin),
 
     token = secrets.token_urlsafe(24)
     user = User(
+        id=user_uuid(payload.email),
         email=payload.email,
         name=payload.name,
         # Unusable until accept-invite sets a real one -- nobody can sign in
@@ -88,7 +90,7 @@ def invite_user(payload: InviteCreate, admin: User = Depends(get_current_admin),
 
 @router.patch("/{user_id}/approve", response_model=UserOut)
 def approve_user(
-    user_id: int,
+    user_id: str,
     payload: UserApprove,
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -108,7 +110,7 @@ def approve_user(
 
 @router.patch("/{user_id}", response_model=UserOut)
 def update_member(
-    user_id: int,
+    user_id: str,
     payload: UserUpdate,
     admin: User = Depends(get_current_admin),
     db: Session = Depends(get_db),
@@ -158,7 +160,7 @@ def update_member(
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def decline_pending_user(user_id: int, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
+def decline_pending_user(user_id: str, admin: User = Depends(get_current_admin), db: Session = Depends(get_db)):
     """Declining is a hard delete -- safe only for pending requests, which by
     definition have no expenses tied to them yet."""
     target = (

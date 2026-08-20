@@ -32,7 +32,7 @@ class Token(BaseModel):
 class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: int
+    id: str
     email: EmailStr
     name: str
     role: UserRole
@@ -99,14 +99,14 @@ class ExpenseCreate(BaseModel):
     description: str = Field(min_length=1, max_length=255)
     category: str = "general"
     date: date_type | None = None
-    participant_ids: list[int] = Field(min_length=1, description="Users this expense is split between")
-    payer_id: int | None = Field(default=None, description="Defaults to the current user")
+    participant_ids: list[str] = Field(min_length=1, description="Users this expense is split between")
+    payer_id: str | None = Field(default=None, description="Defaults to the current user")
 
 
 class ExpenseShare(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    user_id: int
+    user_id: str
     share: float = Field(gt=0)
 
 
@@ -132,15 +132,15 @@ class ExpenseOut(BaseModel):
 # ---- Balances ----
 
 class BalanceEntry(BaseModel):
-    user_id: int
+    user_id: str
     name: str
     net: float  # positive = owed to them, negative = they owe
 
 
 class DebtEntry(BaseModel):
-    from_user_id: int
+    from_user_id: str
     from_name: str
-    to_user_id: int
+    to_user_id: str
     to_name: str
     amount: float
 
@@ -168,17 +168,17 @@ class VapidKeyOut(BaseModel):
 # ---- Settlements ----
 
 class SettlementCreate(BaseModel):
-    to_user_id: int
+    to_user_id: str
     amount: float = Field(gt=0)
     date: date_type | None = None
-    from_user_id: int | None = Field(default=None, description="Defaults to the current user")
+    from_user_id: str | None = Field(default=None, description="Defaults to the current user")
 
 
 class SettlementOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    from_user_id: int
-    to_user_id: int
+    from_user_id: str
+    to_user_id: str
     amount: float
     date: date_type

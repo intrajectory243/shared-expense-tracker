@@ -6,6 +6,7 @@ from app.auth import create_access_token, hash_password, verify_password
 from app.config import settings
 from app.database import get_db
 from app.dependencies import get_current_user
+from app.identity import user_uuid
 from app.models import Household, User, UserRole, UserStatus
 from app.push import send_to_users
 from app.schemas import AcceptInvite, Token, UserOut, UserSignup
@@ -30,6 +31,7 @@ def signup(payload: UserSignup, db: Session = Depends(get_db)):
 
     is_first_user = db.query(User).count() == 0
     user = User(
+        id=user_uuid(payload.email),
         email=payload.email,
         password_hash=hash_password(payload.password),
         name=payload.name,

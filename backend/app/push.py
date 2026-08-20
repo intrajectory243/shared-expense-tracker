@@ -63,7 +63,7 @@ def get_public_key(db: Session) -> str:
     return public_b64
 
 
-def send_to_users(db: Session, user_ids: list[int], title: str, body: str, url: str = "/") -> None:
+def send_to_users(db: Session, user_ids: list[str], title: str, body: str, url: str = "/") -> None:
     """Best-effort: a push failure never surfaces to the caller. Subscriptions
     the browser has since revoked (404/410) are pruned as they're found."""
     if not user_ids:
