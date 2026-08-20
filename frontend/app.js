@@ -856,7 +856,7 @@ async function saveExpense() {
       body: {
         amount,
         description: d.desc || d.category || t('addSheet.fallbackDesc'),
-        category: d.category || 'general',
+        category: d.category || (state.catList[0] ? state.catList[0].name : 'Other'),
         participant_ids: d.participantIds,
         payer_id: d.payerId,
       },
@@ -1253,7 +1253,7 @@ function renderHome() {
         <div style="margin-top:40px">
           <div class="section-head">
             <div class="eyebrow">${t('home.recent')}</div>
-            <a href="#" data-action="toHistory" style="font-size:13.5px;color:var(--sage-soft-text);text-decoration:none">${t('common.allExpenses', { n: fmt(state.expenses.length) })}</a>
+            <a href="#" data-action="toHistory" style="font-size:13.5px;color:var(--sage-soft-text);text-decoration:none">${t(state.expenses.length === 1 ? 'common.allExpensesOne' : 'common.allExpensesMany', { n: fmt(state.expenses.length) })}</a>
           </div>
           <div class="recent-card">
             ${recent.map((e) => `
@@ -1287,7 +1287,7 @@ function renderHistory() {
     <div class="screen">
       <div class="topbar">
         <button class="icon-btn" data-action="toHome"><div class="chevron"></div></button>
-        <div class="eyebrow">${t('common.allExpenses', { n: fmt(state.expenses.length) })}</div>
+        <div class="eyebrow">${t(state.expenses.length === 1 ? 'common.allExpensesOne' : 'common.allExpensesMany', { n: fmt(state.expenses.length) })}</div>
       </div>
       <div style="margin-top:26px;display:flex;align-items:flex-end;justify-content:space-between;gap:14px">
         <div>
@@ -1540,7 +1540,7 @@ function renderMenuSheet() {
       ` : ''}
       <button class="menu-row" data-action="toHistory">
         <span style="flex:1">${t('history.title')}</span>
-        <span class="faint" style="font-size:13px">${t('common.allExpenses', { n: fmt(state.expenses.length) })}</span>
+        <span class="faint" style="font-size:13px">${t(state.expenses.length === 1 ? 'common.allExpensesOne' : 'common.allExpensesMany', { n: fmt(state.expenses.length) })}</span>
       </button>
       <button class="menu-row" data-action="menu.openLang">
         <span style="flex:1">${t('langSheet.title')}</span>
@@ -1683,8 +1683,8 @@ function renderRestoredScreen() {
       <div class="restored-provenance">${state.household ? escapeHtml(state.household.name) : ''}</div>
 
       <div class="restored-card">
-        <div class="restored-row"><div class="restored-row-label">${t('restored.rowExpenses')}</div><div class="restored-row-value tabular">${t('restored.expensesValue', { n: fmt(r.expenses_restored) })}</div></div>
-        <div class="restored-row"><div class="restored-row-label">${t('restored.rowSettlements')}</div><div class="restored-row-value tabular">${t('restored.settlementsValue', { n: fmt(r.settlements_restored) })}</div></div>
+        <div class="restored-row"><div class="restored-row-label">${t('restored.rowExpenses')}</div><div class="restored-row-value tabular">${t(r.expenses_restored === 1 ? 'restored.expensesValueOne' : 'restored.expensesValueMany', { n: fmt(r.expenses_restored) })}</div></div>
+        <div class="restored-row"><div class="restored-row-label">${t('restored.rowSettlements')}</div><div class="restored-row-value tabular">${t(r.settlements_restored === 1 ? 'restored.settlementsValueOne' : 'restored.settlementsValueMany', { n: fmt(r.settlements_restored) })}</div></div>
         <div class="restored-row"><div class="restored-row-label">${t('restored.rowPeople')}</div><div class="restored-row-value tabular">${peopleValue}</div></div>
         <div class="restored-row"><div class="restored-row-label">${t('restored.rowBalance')}</div><div class="restored-row-value">${t('restored.recomputed')}</div></div>
       </div>
