@@ -1,7 +1,6 @@
 'use strict';
 
 const TOKEN_KEY = 'halves_token';
-const CATS = ['Rent', 'Groceries', 'Utilities', 'Household', 'Eating out', 'Transport', 'Other'];
 const EPS = 0.005;
 const PALETTE = ['avatar--sage', 'avatar--amber', 'avatar--blue'];
 const NUMBER_WORDS = ['Zero', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine', 'Ten'];
@@ -27,12 +26,16 @@ const LANG_OPTIONS = [
   { code: 'fa', native: 'فارسی', descKey: 'lang.persianDesc', font: "'Vazirmatn',sans-serif" },
 ];
 
-// Display-only labels, keyed by the exact strings already stored on
-// existing expenses. CATS itself stays canonical English -- it's both the
-// API value and free-text data already on real rows, so it can't change.
+// 'Settled' is a synthetic history-row tag (not a real category -- see
+// history grouping below), the one thing here still worth translating.
+// Real categories are household-owned data now (roadmap Phase 9): seeded
+// once in whoever's request first reads them, then just editable strings
+// -- translating them centrally after that would fight a household that
+// deliberately renamed one, so catLabel() below leaves them exactly as
+// the household spelled them.
 const CAT_LABELS = {
-  en: { Rent: 'Rent', Groceries: 'Groceries', Utilities: 'Utilities', Household: 'Household', 'Eating out': 'Eating out', Transport: 'Transport', Other: 'Other', Settled: 'Settled' },
-  fa: { Rent: 'اجاره', Groceries: 'خواروبار', Utilities: 'آب و برق', Household: 'خانه', 'Eating out': 'رستوران', Transport: 'حمل‌ونقل', Other: 'سایر', Settled: 'تسویه' },
+  en: { Settled: 'Settled' },
+  fa: { Settled: 'تسویه' },
 };
 
 function defaultSignupForm() {
@@ -93,6 +96,8 @@ const state = {
   holdPct: 0,
   lastCopy: null,         // display string, e.g. "just now · 96 KB" -- session-only, not persisted
   restoreResult: null,    // { expenses_restored, settlements_restored, unclaimed_users_created }
+  // Roadmap Phase 9 (editable categories).
+  catList: [],            // [{ id, name, usage }], server-owned -- see app/routers/categories.py
 };
 
 // ---------- helpers ----------
@@ -450,7 +455,7 @@ async function toggleNotifications() {
 
 async function refreshData() {
   const isAdmin = state.me.role === 'admin';
-  const calls = [api('/users'), api('/expenses'), api('/balances'), api('/settlements'), api('/households', { auth: false })];
+  const calls = [api('/users'), api('/expenses'), api('/balances'), api('/settlements'), api('/households', { auth: false }), api('/categories')];
   if (isAdmin) calls.push(api('/users/pending'), api('/users/former'));
   const results = await Promise.all(calls);
   state.users = results[0];
@@ -458,8 +463,9 @@ async function refreshData() {
   state.balance = results[2];
   state.settlements = results[3];
   state.household = results[4].find((h) => h.id === state.me.household_id) || null;
-  state.pending = isAdmin ? results[5] : [];
-  state.former = isAdmin ? results[6] : [];
+  state.catList = results[5];
+  state.pending = isAdmin ? results[6] : [];
+  state.former = isAdmin ? results[7] : [];
 }
 
 async function loadHome() {
@@ -862,6 +868,70 @@ async function saveExpense() {
   } catch (e) {
     state.draftSaving = false;
     flash(e.message || t('toast.couldNotSaveExpense'));
+    render();
+  }
+}
+
+// ---------- categories (roadmap Phase 9) ----------
+
+function openCategoriesSheet() {
+  state.sheet = 'categories';
+  render();
+}
+
+function closeCategoriesSheet() {
+  // Reopens the Add-expense sheet, not just closes -- that's the only
+  // entry point (the "edit" chip in its category row), and the draft it
+  // was already filling out stays intact underneath.
+  state.sheet = 'add';
+  render();
+}
+
+async function renameCategory(id, name) {
+  const trimmed = (name || '').trim();
+  if (!trimmed) return flash(t('toast.catNameFirst'));
+  const current = state.catList.find((c) => c.id === id);
+  if (current && current.name === trimmed) return;
+  try {
+    await api(`/categories/${id}`, { method: 'PATCH', body: { name: trimmed } });
+    if (state.draft.category === (current && current.name)) state.draft.category = trimmed;
+    await refreshData();
+  } catch (e) {
+    flash(e.message || t('toast.couldNotSaveCategory'));
+  }
+  render();
+}
+
+async function addCategory(rawName) {
+  const name = (rawName || '').trim();
+  if (!name) return flash(t('toast.catNameFirst'));
+  if (state.catList.some((c) => c.name.toLowerCase() === name.toLowerCase())) {
+    return flash(t('toast.catAlreadyExists'));
+  }
+  try {
+    await api('/categories', { method: 'POST', body: { name } });
+    state.draft.category = name;
+    await refreshData();
+    flash(t('toast.catAdded', { name }));
+  } catch (e) {
+    flash(e.message || t('toast.couldNotSaveCategory'));
+    render();
+  }
+}
+
+async function removeCategory(id) {
+  const category = state.catList.find((c) => c.id === id);
+  if (!category) return;
+  if (category.usage > 0) {
+    return flash(t(category.usage === 1 ? 'toast.catStillOnOne' : 'toast.catStillOnMany', { name: category.name, n: fmt(category.usage) }));
+  }
+  if (state.catList.length <= 1) return flash(t('toast.catKeepAtLeastOne'));
+  try {
+    await api(`/categories/${id}`, { method: 'DELETE' });
+    await refreshData();
+    flash(t('toast.catRemoved', { name: category.name }));
+  } catch (e) {
+    flash(e.message || t('toast.couldNotRemoveCategory'));
     render();
   }
 }
@@ -1293,7 +1363,8 @@ function renderAddSheet() {
       <input class="desc-input" data-field="draft.desc" value="${escapeHtml(d.desc)}" placeholder="${t('addSheet.descPlaceholder')}" />
 
       <div class="chip-row" style="margin-top:16px">
-        ${CATS.map((c) => `<button class="chip ${d.category === c ? 'chip--active' : ''}" data-action="draft.pickCategory" data-cat="${escapeHtml(c)}">${escapeHtml(catLabel(c))}</button>`).join('')}
+        ${state.catList.map((c) => `<button class="chip ${d.category === c.name ? 'chip--active' : ''}" data-action="draft.pickCategory" data-cat="${escapeHtml(c.name)}">${escapeHtml(c.name)}</button>`).join('')}
+        <button class="chip chip--edit" data-action="draft.openCategories">${t('cats.edit')}</button>
       </div>
 
       <div class="split-block">
@@ -1361,6 +1432,37 @@ function renderEditSharesSheet() {
       </div>
 
       <button class="btn-primary" style="margin-top:18px" data-action="shares.save" ${state.editSharesSaving ? 'disabled' : ''}>${state.editSharesSaving ? t('common.saving') : t('editShares.save')}</button>
+    </div>
+  `;
+}
+
+function renderCategoriesSheet() {
+  return `
+    <div class="sheet-overlay" data-action="categories.close"></div>
+    <div class="sheet-panel">
+      <div class="sheet-handle"></div>
+      <div class="sheet-head">
+        <div class="sheet-title">${t('cats.title')}</div>
+        <button class="sheet-cancel" data-action="categories.close">${t('common.done')}</button>
+      </div>
+      <div style="margin-top:6px;font-size:13px;line-height:1.5" class="faint">${t('cats.subhead')}</div>
+
+      ${state.catList.map((c) => {
+        const canRemove = c.usage === 0 && state.catList.length > 1;
+        return `
+          <div class="cat-row">
+            <input class="cat-name-input" data-cat-id="${c.id}" value="${escapeHtml(c.name)}" />
+            <div class="cat-usage">${c.usage === 0 ? t('cats.unused') : t(c.usage === 1 ? 'cats.usageOne' : 'cats.usageMany', { n: fmt(c.usage) })}</div>
+            <button class="cat-remove-btn ${canRemove ? 'cat-remove-btn--active' : 'cat-remove-btn--disabled'}" data-action="categories.remove" data-cat-id="${c.id}">×</button>
+          </div>
+        `;
+      }).join('')}
+
+      <div class="cat-add-row">
+        <input class="cat-add-input" id="catAddInput" placeholder="${t('cats.addPlaceholder')}" />
+        <button class="cat-add-btn" data-action="categories.add">${t('cats.add')}</button>
+      </div>
+      <div class="cat-footnote">${t('cats.footnote')}</div>
     </div>
   `;
 }
@@ -1899,6 +2001,7 @@ function buildHtml() {
   if (state.sheet === 'lang') html += renderLangSheet();
   if (state.sheet === 'currency') html += renderCurrencySheet();
   if (state.sheet === 'backup') html += renderBackupSheet();
+  if (state.sheet === 'categories') html += renderCategoriesSheet();
   if (state.toast) html += `<div class="toast">${escapeHtml(state.toast)}</div>`;
   return html;
 }
@@ -2011,6 +2114,15 @@ function handleAction(action, el) {
     case 'menu.openBackup': return openBackupSheet();
     case 'backup.export': return exportBackup();
     case 'backup.pickFile': return pickBackupFile();
+    case 'draft.openCategories': return openCategoriesSheet();
+    case 'categories.close': return closeCategoriesSheet();
+    case 'categories.remove': return removeCategory(Number(el.dataset.catId));
+    case 'categories.add': {
+      const input = document.getElementById('catAddInput');
+      const value = input ? input.value : '';
+      if (input) input.value = '';
+      return addCategory(value);
+    }
     case 'acceptInvite.submit': return submitAcceptInvite();
     case 'acceptInvite.toLogin':
       history.replaceState(null, '', location.pathname);
@@ -2051,12 +2163,33 @@ function initEvents() {
 
   app.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter') return;
-    const el = e.target.closest('[data-field]');
-    if (!el) return;
-    if (el.dataset.field === 'login.password') doLogin();
-    if (el.dataset.field === 'signup.password') doSignup();
-    if (el.dataset.field === 'acceptInvite.password') submitAcceptInvite();
+    const field = e.target.closest('[data-field]');
+    if (field) {
+      if (field.dataset.field === 'login.password') doLogin();
+      if (field.dataset.field === 'signup.password') doSignup();
+      if (field.dataset.field === 'acceptInvite.password') submitAcceptInvite();
+      return;
+    }
+    // Categories sheet: name/add inputs are uncontrolled (not wired through
+    // data-field/state) so typing doesn't fight the full-page re-render on
+    // every keystroke -- Enter is what actually persists them.
+    if (e.target.matches('.cat-name-input')) return e.target.blur(); // triggers the blur listener below
+    if (e.target.matches('.cat-add-input')) {
+      const value = e.target.value;
+      e.target.value = '';
+      return addCategory(value);
+    }
   });
+
+  app.addEventListener(
+    'blur',
+    (e) => {
+      if (e.target.matches && e.target.matches('.cat-name-input')) {
+        renameCategory(Number(e.target.dataset.catId), e.target.value);
+      }
+    },
+    true,
+  );
 
   app.addEventListener('change', (e) => {
     if (e.target.id === 'backupFileInput') onBackupFileChosen(e.target.files[0]);

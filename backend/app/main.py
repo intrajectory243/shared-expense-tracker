@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.migrations import run_migrations
-from app.routers import auth, balances, expenses, households, push, users
+from app.routers import auth, balances, categories, expenses, households, push, users
 
 run_migrations()
 
@@ -24,6 +24,7 @@ app.include_router(households.router)
 app.include_router(users.router)
 app.include_router(expenses.router)
 app.include_router(balances.router)
+app.include_router(categories.router)
 app.include_router(push.router)
 
 

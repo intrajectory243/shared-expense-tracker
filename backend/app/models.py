@@ -189,6 +189,28 @@ class BalanceCache(HouseholdBase):
     computed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Category(HouseholdBase):
+    """A household's own expense categories (roadmap Phase 9) -- lives here,
+    not the shared file, so it travels with the household's own file on
+    export/restore (Phase 8) the same way its expenses do. Expense.category
+    stays a plain string, not a FK to this table's id: renaming a category
+    is a bulk UPDATE of every matching Expense.category value in the same
+    transaction (app/routers/categories.py), which is simpler than a join
+    everywhere ExpenseOut.category is read, and this table is what tracks
+    which names currently exist and their canonical spelling. Seeded
+    lazily on first GET /categories, not at household-file creation time --
+    same "nothing until it's actually needed" philosophy as the file itself."""
+
+    __tablename__ = "categories"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    # Not a ForeignKey (see Expense above) -- redundant with the file
+    # boundary, kept only for consistency with every other HouseholdBase model.
+    household_id: Mapped[int] = mapped_column(index=True)
+    name: Mapped[str] = mapped_column(String(60))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AppSetting(SharedBase):
     """Small instance-level key/value store for config generated at runtime
     (currently just the VAPID keypair for web push). Keeps a fresh

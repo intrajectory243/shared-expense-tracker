@@ -326,6 +326,7 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
   height: 34px; padding: 0 13px; border-radius: 99px; font-size: 13.5px;
 }
 .chip--active { border-color: var(--ink); background: var(--ink); color: var(--bg); }
+.chip--edit { border: 1px dashed var(--border-mid); background: transparent; color: var(--sage-soft-text); }
 
 .people-row { margin-top: 10px; display: flex; gap: 7px; }
 .person-chip {
@@ -563,6 +564,24 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 .restored-unclaimed-note { margin-top: 11px; font-size: 13px; line-height: 1.6; color: var(--ink-soft); }
 .restored-btn-primary { margin-top: 26px; }
 .restored-btn-secondary { margin-top: 10px; }
+
+/* Categories sheet (roadmap Phase 9) */
+.cat-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+.cat-name-input { flex: 1; min-width: 0; border: 0; background: transparent; font-size: 16px; color: var(--ink); padding: 2px 0; font-family: inherit; }
+.cat-usage { flex: none; font-size: 12.5px; color: var(--ink-faint); }
+.cat-remove-btn {
+  width: 28px; height: 28px; flex: none; border-radius: 99px; background: transparent;
+  font-size: 15px; line-height: 1; padding: 0; display: flex; align-items: center; justify-content: center;
+}
+.cat-remove-btn--active { border: 1px solid var(--danger-border); color: var(--danger-text); }
+.cat-remove-btn--disabled { border: 1px solid var(--border-soft); color: var(--locked-text); }
+.cat-add-row { margin-top: 14px; display: flex; gap: 8px; }
+.cat-add-input {
+  flex: 1; min-width: 0; box-sizing: border-box; height: 48px; border: 1px dashed var(--border-mid);
+  border-radius: 16px; background: transparent; font-size: 15.5px; color: var(--ink); padding: 0 14px; font-family: inherit;
+}
+.cat-add-btn { flex: none; height: 48px; padding: 0 18px; border: 0; border-radius: 16px; background: var(--ink); color: var(--bg); font-size: 15.5px; font-weight: 500; }
+.cat-footnote { margin-top: 12px; font-size: 12.5px; line-height: 1.55; color: var(--ink-faint); }
 
 /* Invite + Rename sheets */
 .underline-input {

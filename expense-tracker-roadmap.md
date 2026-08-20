@@ -132,23 +132,23 @@ Landing after Phase 7 (household sharding) and the user-UUID migration changed t
 
 ---
 
-## Phase 9 — Editable Categories 🎨 Designed, not built
+## Phase 9 — Editable Categories ✅ Done
 
-Categories have been a hard-coded list (rent, groceries, utilities, household, eating out, transport, other) since Phase 1. Every household that isn't three roommates in Tehran wants different ones — and the list is the one piece of shared vocabulary in the app that users can't touch.
+Categories were a hard-coded list (rent, groceries, utilities, household, eating out, transport, other) since Phase 1. Every household that isn't three roommates in Tehran wants different ones — and the list was the one piece of shared vocabulary in the app users couldn't touch.
 
-- **Reached from where they're used:** an `edit` chip at the end of the category row in the Add Expense sheet — not buried in Household admin. Editing is a member action, not an admin one; the list is shared, but so is the spending.
-- **Rename is the primary operation, not delete:** renaming a category relabels every expense already filed under it (one row, no migration prompt). This is the answer to "we don't call it Utilities, we call it Bills."
-- **Removal is guarded by usage, not by permission:** a category still on any expense can't be removed — the row shows its usage count (`2 expenses` / `unused`) and the × is disabled with an explanatory toast. Prevents orphaned records without needing a reassign flow.
-- **Add is a single text field + Add button**, duplicate names (case-insensitive) rejected; the new category is auto-selected on the expense being logged.
-- **At least one category always survives** — same guard-rail shape as "a household always keeps one admin."
-- **Backend work this implies (not started):** a `Category` table scoped to `household_id` (respecting the Phase 7 no-cross-household-queries invariant), seeded with the current defaults per household on creation; `Expense.category` moves from a bare string to a category reference or stays a string with a rename cascade — the mock assumes the cascade is invisible to the user either way. Alembic migration needed to backfill existing households from the hard-coded list. i18n note: the seven defaults are currently translated strings; once user-editable they become user data and stop being translatable — seed them in the household's language at creation and leave them alone.
-- **Mocked in:** `Phone.dc.html` (interactive: rename, add, blocked-remove, usage counts) and `PhoneIntl.dc.html` → `cats-fa`.
+- **`Category` table lives in the household file** (`HouseholdBase`, not shared) — a deliberate call beyond the original sketch: it means a household's own categories travel with it for free on export/restore (Phase 8), the same way its expenses do, with zero extra work in either endpoint.
+- **Seeded lazily on first `GET /categories`**, not at household creation or via migration backfill — same "nothing until it's actually needed" approach the household file itself already uses. Seeded in whichever user's request happens to trigger it, since language is per-user in this app's data model, not per-household (the original design note assumed a single household language, which doesn't exist here — resolved in conversation before building).
+- **`Expense.category` stayed a plain string**, not a FK to `Category.id` — a rename is one bulk `UPDATE` of matching `Expense.category` rows in the same transaction, not a join everywhere a category displays.
+- **Reached from where it's used:** an `edit` chip at the end of the Add Expense sheet's category row, not buried in Household admin — editing is a member action, not an admin-only one (`get_current_active_user`, same gate as logging an expense).
+- **Rename cascades**, guarded against duplicates (case-insensitive); **remove is blocked by usage** (a category still on any expense can't be removed, server-side — the API is the real guard, not just a client-side toast) **and by being the last one left**; **add** rejects empty/duplicate names, auto-selects the new category on the expense being logged.
+- **11 new backend tests** (68 → 79 total: categories CRUD, seeding in both languages, rename-cascade, both usage/last-category delete guards, duplicate rejection). Live-verified end to end via the API: seed → add → rename → delete.
+- i18n: the 7 seeded defaults are real household data from the moment they're seeded, not a translated lookup — `CAT_LABELS` (frontend) now only translates the synthetic "Settled" history tag, nothing else; a category keeps exactly the spelling it was seeded or renamed to, in any UI language.
 
 ---
 
 ## Status
 
-**Beta — Phases 1–8 done. i18n completion (sign-in language switcher, Persian screen-set) shipped. Phase 9 (editable categories) designed, not built.**
+**Beta — Phases 1–9 done, with the i18n completion pass (sign-in language switcher, Persian screen-set) shipped alongside Phase 8's frontend.**
 
 Deliberately deferred, not blockers:
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.

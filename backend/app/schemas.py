@@ -98,6 +98,24 @@ class RestoreSummary(BaseModel):
     unclaimed_users_created: int
 
 
+# ---- Categories ----
+
+class CategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    usage: int = 0
+
+
+class CategoryCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
+class CategoryUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=60)
+
+
 # ---- Expenses ----
 
 class ExpenseCreate(BaseModel):
