@@ -91,8 +91,8 @@ Built as a single-file vanilla-JS SPA (`app.js`, no framework, no build step), s
 - **Frontend architecture:** flat dotted-key dictionary (`en`/`fa`) behind a single `t(key, params)` lookup, `state.lang` synced from the account on login/signup, `document.documentElement.lang`/`dir` driven centrally, and locale-aware number/date formatting (Persian digits + Jalali calendar via `Intl`'s `-u-ca-persian-nu-arabext`).
 - **RTL isolated by construction, not by convention:** almost every rule uses CSS logical properties (`margin-inline-*`, `text-align: start`, etc.), so it's direction-agnostic automatically. The two things that can't be expressed that way (the CSS-border-triangle chevrons, the Persian font swap) are consolidated into one bannered block at the end of `styles.css` — the single place anyone ever needs to touch for a language/direction change.
 - **Full copy pass, not just the mocked screens:** every screen and sheet (signup, home, history, add/settle/edit-shares sheets, household admin, member sheet, invite, rename, menu, accept-invite, the new Language/Currency sheets) and every toast/error message routes through `t()` — roughly 240 keys, in parity across both languages.
-- **Language switch on both entry points (design updated Aug 20):** the chip row was only on sign-up, which left a returning Persian speaker staring at an English sign-in with no way out until after login. Mocked now on sign-in too, same three chips, same position under the tagline (`Phone.dc.html` login screen, `login-fa` in `PhoneIntl.dc.html`). Backend needs nothing — it's a pre-auth client-side preference, same as the signup chips.
-- **Persian screen set completed (design, Aug 20):** `PhoneIntl.dc.html` now covers `login-fa`, `pending-fa`, `menu-fa`, `settle-fa`, `cats-fa`, `household-fa` (including the unclaimed member row) on top of the existing home/add/history/backup screens — so the RTL pass has a reference for every screen the English file has, not just the four originally sketched.
+- **Language switch on both entry points, shipped:** the chip row was only on sign-up, leaving a returning Persian speaker stranded on an English sign-in with no way out until after login. Now on sign-in too — same `LANG_OPTIONS` chip row, same position under the tagline, its own pre-auth `login.pickLang` action (sets `state.lang`/`localStorage` directly, same as `signup.pickLang` — no sheet to close, no authenticated endpoint to call, unlike the in-app Menu → Language switch).
+- **Persian screen set**: every screen Phase 6 already put through `t()` was cross-checked against the handoff's `-fa` reference screens (`login-fa`, `pending-fa`, `menu-fa`, `settle-fa`, `cats-fa`, `household-fa`) for copy drift — no structural gaps found; the household screen's unclaimed-member Persian strings (new from Phase 8's frontend) were written against the same reference.
 - **Verified live**, not just statically: drove the running app through a real signup → approval-pending → admin login → add expense → switch language mid-session → history → currency change flow in a headless browser, in both languages, with zero console errors.
 
 ---
@@ -148,7 +148,7 @@ Categories have been a hard-coded list (rent, groceries, utilities, household, e
 
 ## Status
 
-**Beta — Phases 1–8 done. Phase 9 (editable categories) designed, not built. i18n completion (sign-in language switcher, Persian screen-set spot-check) queued next.**
+**Beta — Phases 1–8 done. i18n completion (sign-in language switcher, Persian screen-set) shipped. Phase 9 (editable categories) designed, not built.**
 
 Deliberately deferred, not blockers:
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.

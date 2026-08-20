@@ -1008,6 +1008,9 @@ function renderLogin() {
     <div class="screen screen--auth">
       <div class="brand">Halves</div>
       <div class="tagline">${t('login.tagline')}</div>
+      <div class="chip-row" style="margin-top:22px">
+        ${LANG_OPTIONS.map((l) => `<button class="chip ${state.lang === l.code ? 'chip--active' : ''}" style="font-family:${l.font}" data-action="login.pickLang" data-lang="${l.code}">${l.native}</button>`).join('')}
+      </div>
       <div class="form-stack">
         <div class="field">
           <label>${t('login.labelEmail')}</label>
@@ -1965,6 +1968,10 @@ function handleFieldInput(field, value) {
 function handleAction(action, el) {
   switch (action) {
     case 'login.submit': return doLogin();
+    case 'login.pickLang':
+      state.lang = el.dataset.lang;
+      localStorage.setItem('halves_lang', state.lang);
+      return render();
     case 'signup.open': return openSignup();
     case 'signup.toLogin': state.route = 'login'; return render();
     case 'signup.modeCreate': state.signupForm.mode = 'create'; return render();
