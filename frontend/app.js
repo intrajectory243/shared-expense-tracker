@@ -871,6 +871,22 @@ function toggleDraftPerson(id) {
   render();
 }
 
+// The visible date pill is a plain button; the real <input type="date"> is
+// kept off-screen (styling a date input to fill a button is unreliable
+// across browsers, especially Safari). showPicker() opens the native
+// picker from the button's click gesture; .click() is the fallback for
+// anything without showPicker.
+function openDatePicker() {
+  const input = document.querySelector('.date-hidden-input');
+  if (!input) return;
+  try {
+    if (typeof input.showPicker === 'function') input.showPicker();
+    else input.click();
+  } catch (e) {
+    input.click();
+  }
+}
+
 function cyclePayer() {
   const ids = activeMembers().map((u) => u.id);
   if (!ids.length) return;
@@ -1432,10 +1448,8 @@ function renderAddSheet() {
           <span class="avatar avatar-sm avatar--muted">${initials(payer.name)}</span>
           <span>${t('addSheet.payerPaid', { name: escapeHtml(payer.name) })}</span>
         </button>
-        <label class="date-btn">
-          <span>${draftDate === todayISO() ? t('addSheet.today') : fmtDate(draftDate)}</span>
-          <input type="date" data-field="draft.date" value="${draftDate}" max="${todayISO()}" />
-        </label>
+        <button type="button" class="date-btn" data-action="draft.pickDate">${draftDate === todayISO() ? t('addSheet.today') : fmtDate(draftDate)}</button>
+        <input type="date" class="date-hidden-input" data-field="draft.date" value="${draftDate}" max="${todayISO()}" tabindex="-1" aria-hidden="true" />
       </div>
 
       <button class="btn-primary" style="margin-top:16px" data-action="draft.save" ${state.draftSaving ? 'disabled' : ''}>${state.draftSaving ? t('common.saving') : t('addSheet.save')}</button>
@@ -2183,6 +2197,7 @@ function handleAction(action, el) {
     case 'draft.pickCategory': state.draft.category = el.dataset.cat; return render();
     case 'draft.togglePerson': return toggleDraftPerson(el.dataset.userId);
     case 'draft.cyclePayer': return cyclePayer();
+    case 'draft.pickDate': return openDatePicker();
     case 'draft.save': return saveExpense();
     case 'history.editShares': return openEditSharesSheet(Number(el.dataset.expenseId));
     case 'shares.togglePerson': return toggleShareParticipant(el.dataset.userId);
@@ -2210,6 +2225,9 @@ function initEvents() {
   app.addEventListener('input', (e) => {
     const el = e.target.closest('[data-field]');
     if (!el) return;
+    // Date inputs are handled on 'change' only -- re-rendering mid-pick
+    // (which replaces the input) fights the open native picker.
+    if (el.matches('input[type="date"]')) return;
     handleFieldInput(el.dataset.field, el.value);
   });
 
@@ -2244,7 +2262,12 @@ function initEvents() {
   );
 
   app.addEventListener('change', (e) => {
-    if (e.target.id === 'backupFileInput') onBackupFileChosen(e.target.files[0]);
+    if (e.target.id === 'backupFileInput') return onBackupFileChosen(e.target.files[0]);
+    // <input type="date"> doesn't reliably fire 'input' on selection across
+    // browsers (Safari and some mobile pickers only emit 'change'), so the
+    // 'input' handler above can miss it -- route it through here too.
+    const field = e.target.closest('[data-field]');
+    if (field && field.matches('input[type="date"]')) handleFieldInput(field.dataset.field, field.value);
   });
 
   // Hold-to-restore isn't a click, so it's outside the data-action

@@ -2,7 +2,7 @@
 
 A self-hosted, source-available expense tracker for splitting shared costs between roommates (or any group) — one running balance, minimal taps to log an expense, no clutter.
 
-**Status: `0.9.3` — beta.** Live at [halves.ir](https://halves.ir). Core flows are built and tested end-to-end; the `0.x` version line means the app is still beta and the 1.0 stability commitment hasn't been made yet.
+**Status: `0.9.4` — beta.** Live at [halves.ir](https://halves.ir). Core flows are built and tested end-to-end; the `0.x` version line means the app is still beta and the 1.0 stability commitment hasn't been made yet.
 
 Created by [intrajectory243](https://github.com/intrajectory243), built collaboratively with [Claude Code](https://claude.com/claude-code).
 

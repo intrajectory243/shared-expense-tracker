@@ -1,7 +1,7 @@
 {
   "name": "Halves",
   "short_name": "Halves",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "One running total for the household.",
   "start_url": "/",
   "scope": "/",
