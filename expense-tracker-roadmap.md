@@ -119,7 +119,7 @@ Landing after Phase 7 (household sharding) and the user-UUID migration changed t
 - **`GET /households/{id}/export`** — admin-only, own household only. A plain file copy would risk missing rows still sitting in the WAL sidecar (household files run in WAL mode), so this uses SQLite's online backup API to produce a point-in-time-consistent snapshot, streamed back and self-deleted after the response.
 - **`POST /households/{id}/restore`** — admin-only, own household only. Validates the upload (integrity check, must already carry household-stream migration history — a blank or unrelated SQLite file is rejected, not silently accepted), upgrades it to the current schema if it's an older export, rewrites every row's `household_id` to the target household (this is what makes "restore my own backup" and "migrate this household to a new instance" the same code path), backs up the current file first unconditionally, evicts the household's LRU-registry engine before the atomic swap, and clears the stale WAL sidecars + cached balance afterward.
 - **Unclaimed-stub identity model** (the piece that needed real design, captured in a project memory before implementation): a restored file can reference a user id this instance doesn't know — restore never force-creates a real account for them. It creates an `unclaimed` stub (placeholder name, unusable password) instead, which renders correctly everywhere by construction (balances, expense history) since the name-stitch pattern already reads whatever user row it finds. If that person later signs up here with the email that hashes to the same id, `POST /auth/signup` **claims** the stub in place — same row, no duplicate, every prior expense/settlement picks up their real name automatically.
-- **69 tests passing** (9 new), plus a live round-trip smoke test in the Docker dev container: export → mutate → restore → confirm the mutation is gone and the exported state is back, WAL/shm sidecars and the `.pre-restore-backup` file left in the expected state, `PRAGMA integrity_check` clean.
+- **68 tests passing** (9 new, on top of Phase 7's 59), plus a live round-trip smoke test in the Docker dev container: export → mutate → restore → confirm the mutation is gone and the exported state is back, WAL/shm sidecars and the `.pre-restore-backup` file left in the expected state, `PRAGMA integrity_check` clean.
 - **Frontend built** from the design handoff (`Phone.dc.html`/`PhoneIntl.dc.html`), pixel-for-pixel where the backend could support it exactly, with two disclosed trims:
   - **Lives in Menu → Backup**, next to Language and Currency, admin-only — not on the Household screen.
   - **Export is one dark button** ("Download a copy") with a quiet last-copy line under it (session-only, resets on reload — not a tracked metric).
@@ -146,11 +146,35 @@ Categories were a hard-coded list (rent, groceries, utilities, household, eating
 
 ---
 
-## Status
+## Phase 10 — Live deployment & post-launch fixes 🔵 In progress
 
-**Beta — Phases 1–9 done, with the i18n completion pass (sign-in language switcher, Persian screen-set) shipped alongside Phase 8's frontend.**
+Phases 1–9 (plus the i18n completion pass — sign-in language switcher, Persian screen-set — shipped alongside Phase 8's frontend) took the app to feature-complete. On **2026-09-01** it went to a first real public instance at **halves.ir** (self-hosted on a VPS, single Docker container, TLS via a reverse proxy in front of port 8130). Everything before this was local / Docker-dev only.
 
-Deliberately deferred, not blockers:
+Going live also started standard **SemVer** versioning. The app stays on the `0.x` line — `0.x` *is* the "beta" signal; `1.0.0` is reserved for a deliberate stability call. Every change ships as `0.9.z` with a `v0.9.z` tag; `beta:` commit prefix.
+
+### Shipped (all tagged and deployed to halves.ir)
+
+- **`0.9.0` — versioning infrastructure.** Root `VERSION` file as the single source of truth, mirrored into `app.__version__` (fed to `FastAPI(version=)` and `GET /health`), the service-worker cache name, and the PWA manifest.
+- **`0.9.1` — per-household admin bootstrap.** Signup auto-approved an admin only for the *first user on the whole instance* (`is_first_user`), so on a multi-tenant instance the 2nd+ person to create their own household landed `pending` in a household with no admin — unusable, nobody could approve them. Replaced with `auth._initial_role_and_status(db, household)`: whoever founds a household (any household with no approved admin) is auto-approved as its admin; joiners of a household that already has one still wait for approval. `BOOTSTRAP_ADMIN` broadened from "first user ever" to "first user of each household". Does **not** retroactively fix households orphaned before the fix — those need a manual promote.
+- **`0.9.2` — Persian amount fields only accepted one digit.** `parseAmount()` kept only `[0-9]`, but `fmt()` re-emits amounts as Persian digits under `fa` and the amount fields reformat on every keystroke — so each keystroke discarded the digits already there. Added `toLatinDigits()` (Persian U+06F0–U+06F9 + Arabic-Indic U+0660–U+0669 → ASCII).
+- **`0.9.3` — real expense-date picker + record timestamp.** The "Today" pill was a hardcoded `disabled` button; the expense date was always the server's (UTC) `date.today()`, so a user east of UTC logging after midnight got yesterday's date. Now a real date control: `state.draft.date` defaults to the client's *local* today and is sent on create; backend `ExpenseCreate.date` / `SettlementCreate.date` share a `RecordDate` type that rejects dates more than a day in the future. `SettlementOut` now also returns `created_at` (ExpenseOut already did). History rows show a faint "logged {when}" line only when a record was backdated (its `created_at` local date ≠ its `date`).
+- **`0.9.4` — date picker cross-browser rework.** Two problems with the 0.9.3 control: it was routed only through the delegated `input` event (date inputs don't reliably fire `input` on selection — Safari/mobile emit only `change`), and it was an `opacity:0` `<input type="date">` stretched over a `<label>` (WebKit clamps date inputs to intrinsic size, so taps on the label text missed). Now the visible pill is a plain `<button>` that calls `input.showPicker()` (fallback `.click()`) on an off-screen real input; `change` is routed through `handleFieldInput`. **Known gap:** `showPicker()` is absent on iOS < 16.4 and `.click()` is unreliable there — see issue #2.
+- **Deploy tooling.** `docker-compose.yml` is now production-shaped (code runs from the built image, `restart: unless-stopped`, no `--reload`, only the `db-data` volume, `env_file: backend/.env`). Dev bind-mounts + `--reload` moved to `docker-compose.override.yml`, which `docker compose` loads automatically for local dev but a `-f docker-compose.yml` production command skips. `DEPLOY.md` covers first-run, updates, rollback, and volume backups.
+
+**Test count: 82** (79 after Phase 9, + 1 for the per-household admin fix, + 2 for the date/timestamp behaviour; dead test-helper workarounds were removed with the 0.9.1 fix but no test functions were dropped). Two `test_backup_restore` failures and two `test_migrations` teardown errors show up on Windows only — `PermissionError [WinError 32]` releasing a temp `.db`, an environment quirk; all green in the Linux/Docker container.
+
+**Production hardening done at launch:** `SECRET_KEY` was still the built-in `dev-secret-key-change-me` on the live instance (forgeable auth tokens) — replaced with a real 48-byte key in `backend/.env`; existing sessions invalidated once.
+
+### Open (tracked as GitHub issues, deferred — not blockers)
+
+- **#2 — expense date picker may not open on iOS < 16.4.** Fix = native `<input type="date">` as the pill, or a `'showPicker' in HTMLInputElement.prototype` feature-detect branch. Android and iOS 16.4+ are expected to work but are unverified on real devices.
+- **#3 — no password management.** The app has no change-password screen and no reset flow (it uses Web Push, not email, so no mail channel for a reset link). Surfaced when a real user forgot their password; stopgap is a manual `hash_password` update in the shared DB. Planned: `PATCH /users/me/password` + a Menu → Account screen, plus admin-generated reset links reusing the existing invite-token mechanism. Email-based self-service reset is out of scope (would force SMTP config on self-hosters).
+
+---
+
+## Deliberately deferred, not blockers
+
 1. **Postgres migration** — `DATABASE_URL` is already a config swap, and Alembic's migrations run against Postgres the same way they do SQLite (SQLite just needs `render_as_batch` for its limited `ALTER TABLE` support, already enabled). Not needed until SQLite's single-writer model actually becomes the bottleneck.
+2. **Jalali date picker** — the native `<input type="date">` picker is Gregorian even under `fa`. A calendar-aware picker is separate, larger work; the *displayed* dates elsewhere already render Jalali via `Intl`.
 
-*Originally: planning stage, no code written yet. This section now reflects the actual implementation, checked against `backend/` and `frontend/` in the `shared-expense-tracker-main` upload.*
+*Phases 1–9 originally read "planning stage, no code written yet"; those sections now reflect the actual implementation, checked against `backend/` and `frontend/`. Phase 10 tracks the live instance.*

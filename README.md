@@ -35,7 +35,7 @@ It's self-hosted by design: you run your own instance (Docker or a plain Python 
 
 - **Backend:** Python, FastAPI, SQLAlchemy 2.0, SQLite, JWT bearer auth (`python-jose`), `bcrypt` for password hashing.
 - **Frontend:** Vanilla JS single-page app — no build step, no framework. A single `app.js` re-renders from a plain state object; FastAPI serves it as static files from the same process.
-- **Tests:** pytest, 79 backend tests covering auth, expense splitting, balance math, membership lifecycle, weighted shares, the balance cache, push notifications, schema migrations, per-household DB isolation, backup/restore, and editable categories.
+- **Tests:** pytest, 82 backend tests covering auth, expense splitting, balance math, membership lifecycle, weighted shares, backdated records, the balance cache, push notifications, schema migrations, per-household DB isolation, backup/restore, and editable categories.
 
 ## Getting started
 
