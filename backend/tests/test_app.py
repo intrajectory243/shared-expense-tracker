@@ -26,6 +26,29 @@ def test_first_user_becomes_approved_admin(client):
     assert body["household_id"] is not None
 
 
+def test_second_household_founder_becomes_its_own_admin(client):
+    """Regression: the admin/approved decision is per-household, not
+    instance-wide. Someone who signs up creating a *new* household is that
+    household's founding admin even though they're not the first user on the
+    instance -- otherwise their household has no admin and is unusable."""
+    signup(client, "alice@example.com", household_name="Flat A")
+
+    resp = signup(client, "bob@example.com", household_name="Flat B")
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["role"] == "admin"
+    assert body["status"] == "approved"
+
+    # And can actually exercise an admin-only route in their own household.
+    bob_token = login(client, "bob@example.com")
+    invite = client.post(
+        "/users/invite",
+        json={"name": "Carol", "email": "carol@example.com"},
+        headers=auth_headers(bob_token),
+    )
+    assert invite.status_code == 201, invite.text
+
+
 def test_duplicate_email_rejected(client):
     signup(client, "admin@example.com", household_name="Roommates")
     resp = signup(client, "admin@example.com", household_name="Other House")

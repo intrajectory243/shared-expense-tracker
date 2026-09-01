@@ -9,7 +9,7 @@ ORM relationship used to give for free."""
 
 from app.database import SessionLocal
 from app.household_db import household_db_path, household_session
-from app.models import Expense, User, UserRole, UserStatus
+from app.models import Expense, User
 
 
 def signup(client, email, household_name=None, name="Test User", password="password123"):
@@ -32,22 +32,11 @@ def auth_headers(token):
 
 
 def _new_household(client, email, household_name):
-    """Only the instance's very first signup ever auto-bootstraps as an
-    approved admin (auth.py's is_first_user check is instance-wide, not
-    per-household) -- every household after the first one in a test run
-    would otherwise land 'pending' with no admin of its own to approve
-    them. Promote directly via the shared DB, same as a real deploy would
-    need a human to do out-of-band for a second from-scratch household."""
+    """Founding a household makes you its admin (auth._initial_role_and_status),
+    so every household in a test run gets its own approved admin with no
+    out-of-band promotion."""
     created = signup(client, email, household_name=household_name)
-    db = SessionLocal()
-    try:
-        user = db.get(User, created["id"])
-        if user.status != UserStatus.approved:
-            user.status = UserStatus.approved
-            user.role = UserRole.admin
-            db.commit()
-    finally:
-        db.close()
+    assert created["status"] == "approved" and created["role"] == "admin"
     return {
         "household_id": created["household_id"],
         "user_id": created["id"],

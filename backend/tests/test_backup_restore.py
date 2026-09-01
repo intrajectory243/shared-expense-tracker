@@ -12,7 +12,7 @@ import io
 import sqlite3
 
 from app.database import SessionLocal
-from app.models import User, UserRole, UserStatus
+from app.models import User, UserStatus
 
 BACKUP_MEDIA_TYPE = "application/octet-stream"
 
@@ -39,22 +39,10 @@ def auth_headers(token):
 
 
 def setup_household(client, n_members=1, household_name="Roommates", admin_email="admin@example.com"):
+    # Founding a household makes you its approved admin
+    # (auth._initial_role_and_status), regardless of instance signup order.
     admin = signup(client, admin_email, household_name=household_name, name="Admin One")
-    # Only the instance's very first-ever signup auto-bootstraps as an
-    # approved admin (auth.py's is_first_user check is instance-wide, not
-    # per-household) -- every household after the first one in a test run
-    # would otherwise land 'pending' with no admin of its own to approve
-    # them. Promote directly, same as a real deploy needs a human to do
-    # out-of-band for a second from-scratch household.
-    db = SessionLocal()
-    try:
-        user = db.get(User, admin["id"])
-        if user.status != UserStatus.approved:
-            user.status = UserStatus.approved
-            user.role = UserRole.admin
-            db.commit()
-    finally:
-        db.close()
+    assert admin["status"] == "approved" and admin["role"] == "admin"
     admin_token = login(client, admin_email)
 
     members = []
@@ -225,7 +213,7 @@ def test_signup_claims_an_unclaimed_stub_instead_of_duplicating_it(client):
     # uuid5(email) id as the stub restore just created.
     claimed = signup(client, member["email"], household_id=hh["household_id"], name="Real Member Name")
     assert claimed["id"] == member["id"]
-    assert claimed["status"] == "pending"  # not the first user on this instance
+    assert claimed["status"] == "pending"  # joining a household that already has an admin
 
     db = SessionLocal()
     try:

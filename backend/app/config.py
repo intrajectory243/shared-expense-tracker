@@ -14,8 +14,11 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 7  # 7 days
     algorithm: str = "HS256"
 
-    # First user to sign up is auto-approved as admin so the instance is usable
-    # immediately after a fresh self-hosted install.
+    # The first user into any household with no approved admin (a household
+    # they just created, or one whose admins are all gone) is auto-approved
+    # as its admin, so a fresh install -- and every household created on a
+    # multi-tenant instance -- is usable immediately. Set false to opt the
+    # whole instance out and assign admins out-of-band instead.
     bootstrap_admin: bool = True
 
 
