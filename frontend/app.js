@@ -139,8 +139,19 @@ function catLabel(cat) {
   return (CAT_LABELS[state.lang] || {})[cat] || cat;
 }
 
+// Persian (U+06F0-U+06F9) and Arabic-Indic (U+0660-U+0669) digits -> ASCII.
+// Needed because fa formatting (fmt) emits Persian digits and a Persian
+// keyboard types them, and parseAmount below only keeps [0-9] -- without
+// this, every keystroke in an amount field discards the digits already
+// there and the field can never hold more than the one just typed.
+function toLatinDigits(str) {
+  return String(str ?? '')
+    .replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x06f0)
+    .replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x0660);
+}
+
 function parseAmount(str) {
-  const digits = String(str || '').replace(/[^0-9]/g, '');
+  const digits = toLatinDigits(str).replace(/[^0-9]/g, '');
   return digits ? Number(digits) : 0;
 }
 
