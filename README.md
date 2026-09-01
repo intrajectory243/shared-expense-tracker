@@ -2,7 +2,7 @@
 
 A self-hosted, source-available expense tracker for splitting shared costs between roommates (or any group) — one running balance, minimal taps to log an expense, no clutter.
 
-**Status: beta.** Core flows are built and tested end-to-end; this isn't the 1.0 release yet.
+**Status: `0.9.0` — beta.** Live at [halves.ir](https://halves.ir). Core flows are built and tested end-to-end; the `0.x` version line means the app is still beta and the 1.0 stability commitment hasn't been made yet.
 
 Created by [intrajectory243](https://github.com/intrajectory243), built collaboratively with [Claude Code](https://claude.com/claude-code).
 
@@ -35,7 +35,7 @@ It's self-hosted by design: you run your own instance (Docker or a plain Python 
 
 - **Backend:** Python, FastAPI, SQLAlchemy 2.0, SQLite, JWT bearer auth (`python-jose`), `bcrypt` for password hashing.
 - **Frontend:** Vanilla JS single-page app — no build step, no framework. A single `app.js` re-renders from a plain state object; FastAPI serves it as static files from the same process.
-- **Tests:** pytest, 27 backend tests covering auth, expense splitting, balance math, membership lifecycle, and weighted shares.
+- **Tests:** pytest, 79 backend tests covering auth, expense splitting, balance math, membership lifecycle, weighted shares, the balance cache, push notifications, schema migrations, per-household DB isolation, backup/restore, and editable categories.
 
 ## Getting started
 

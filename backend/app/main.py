@@ -4,12 +4,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+from app import __version__
 from app.migrations import run_migrations
 from app.routers import auth, balances, categories, expenses, households, push, users
 
 run_migrations()
 
-app = FastAPI(title="Shared Expense Tracker")
+app = FastAPI(title="Halves", version=__version__)
 
 app.add_middleware(
     CORSMiddleware,
@@ -30,7 +31,7 @@ app.include_router(push.router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    return {"status": "ok", "version": __version__}
 
 
 # Self-hosting stays a single process: serve the static frontend from the
