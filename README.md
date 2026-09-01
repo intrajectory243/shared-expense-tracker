@@ -51,7 +51,9 @@ docker compose up --build
 
 The app will be available at **http://localhost:8130**. The SQLite database lives in a named Docker volume (`db-data`), so it survives container restarts — `docker compose down -v` if you ever want to wipe it and start fresh.
 
-The included `docker-compose.yml` is set up for active development: `backend/app` and `frontend` are bind-mounted into the container and the server runs with `--reload`, so local edits apply immediately (a browser refresh for frontend changes, automatic for backend changes) without rebuilding the image.
+`docker compose up` also loads `docker-compose.override.yml`, which bind-mounts `backend/app` and `frontend` into the container and runs the server with `--reload`, so local edits apply immediately (a browser refresh for frontend changes, automatic for backend changes) without rebuilding the image.
+
+For a real deployment (auto-restart, code baked into the image, no `--reload`), use the base file only — `docker compose -f docker-compose.yml up -d --build` — and see [DEPLOY.md](DEPLOY.md).
 
 ### Option B — Run locally without Docker
 

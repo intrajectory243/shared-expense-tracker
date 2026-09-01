@@ -1,21 +1,24 @@
+# Base compose — production shape. Runs the code baked into the image
+# (deploy = rebuild), auto-restarts, no --reload.
+#
+#   Production:  docker compose -f docker-compose.yml up -d --build
+#   Development: docker compose up            (also loads docker-compose.override.yml)
+#
+# See DEPLOY.md.
 services:
   app:
     build: .
+    restart: unless-stopped
     ports:
       - "8130:8000"
     volumes:
       - db-data:/app/backend/data
-      - ./frontend:/app/frontend:ro
-      - ./backend/app:/app/backend/app:ro
-      - ./backend/tests:/app/backend/tests:ro
-      - ./backend/pytest.ini:/app/backend/pytest.ini:ro
-      - ./backend/scripts:/app/backend/scripts:ro
-      - ./backend/alembic:/app/backend/alembic
-      - ./backend/alembic.ini:/app/backend/alembic.ini:ro
-      - ./backend/alembic_household.ini:/app/backend/alembic_household.ini:ro
     environment:
       - DATABASE_URL=sqlite:////app/backend/data/expense_tracker.db
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - path: backend/.env
+        required: false
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 volumes:
   db-data:

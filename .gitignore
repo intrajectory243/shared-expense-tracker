@@ -16,6 +16,9 @@ venv/
 .DS_Store
 debug.log
 
+# Docker convenience install script, fetched on a server
+get-docker.sh
+
 # Editors
 .vscode/
 .idea/
