@@ -75,7 +75,7 @@ const state = {
   toast: null,
   loginForm: { email: '', password: '', error: null, loading: false },
   signupForm: defaultSignupForm(),
-  draft: { amount: '', desc: '', category: null, participantIds: [], payerId: null },
+  draft: { amount: '', desc: '', category: null, participantIds: [], payerId: null, date: '' },
   draftSaving: false,
   settleDraft: { counterpartId: null, amount: '' },
   settleSaving: false,
@@ -223,6 +223,30 @@ function monthLabel(isoDate) {
 
 function dayOfMonth(isoDate) {
   return isoDate.slice(8, 10);
+}
+
+// Local calendar day as YYYY-MM-DD (not toISOString, which is UTC and can
+// land on the wrong day). This is what the date picker defaults to and
+// what we send, so the expense date is the user's "today", not the
+// server's.
+function localISO(d) {
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function todayISO() {
+  return localISO(new Date());
+}
+
+function fmtDate(isoDate) {
+  return new Date(isoDate + 'T00:00:00').toLocaleDateString(LOCALE_TAGS[state.lang] || 'en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+// Full timestamp of when a record was actually entered (created_at). ISO
+// string from the API is UTC; toLocaleString renders it in the reader's
+// zone and calendar (Jalali + Persian digits for fa).
+function fmtDateTime(iso) {
+  return new Date(iso).toLocaleString(LOCALE_TAGS[state.lang] || 'en-US', { dateStyle: 'medium', timeStyle: 'short' });
 }
 
 // ---------- API client ----------
@@ -835,6 +859,7 @@ function openAddSheet() {
     amount: '', desc: '', category: null,
     participantIds: activeMembers().map((u) => u.id),
     payerId: state.me.id,
+    date: todayISO(),
   };
   state.sheet = 'add';
   render();
@@ -868,6 +893,7 @@ async function saveExpense() {
         amount,
         description: d.desc || d.category || t('addSheet.fallbackDesc'),
         category: d.category || (state.catList[0] ? state.catList[0].name : 'Other'),
+        date: d.date || todayISO(),
         participant_ids: d.participantIds,
         payer_id: d.payerId,
       },
@@ -1043,6 +1069,12 @@ function buildHistoryGroups() {
     rows.push({
       kind: 'expense', id: e.id, sortKey: e.date, month: monthLabel(e.date), day: dayOfMonth(e.date),
       desc: e.description, cat: e.category, amount: e.amount,
+      // Only surface when it was entered if that wasn't the same day as the
+      // expense itself -- i.e. it was backdated. Same-day is the norm and
+      // the day marker already says it.
+      loggedAtLabel: localISO(new Date(e.created_at)) !== e.date
+        ? t('history.loggedAt', { when: fmtDateTime(e.created_at) })
+        : null,
       payerLabel: t('history.paidBy', { name: e.payer.name }),
       // Most expenses are logged by the payer themselves -- only call out
       // who actually entered it when that's not the case, to avoid clutter.
@@ -1060,6 +1092,9 @@ function buildHistoryGroups() {
       desc: t('history.settlementDesc', { from: fromName, to: toName }), cat: 'Settled', amount: s.amount,
       payerLabel: t('history.repayment'),
       loggedByLabel: null,
+      loggedAtLabel: s.created_at && localISO(new Date(s.created_at)) !== s.date
+        ? t('history.loggedAt', { when: fmtDateTime(s.created_at) })
+        : null,
       parts: [initials(fromName), initials(toName)],
       shareLabel: t('history.balanceReduced'),
       titleColor: 'var(--sage-soft-text)', tagClass: 'tag tag--settled',
@@ -1331,6 +1366,7 @@ function renderHistory() {
                   <span class="parts-row">${e.parts.map((p) => `<span class="avatar avatar-xs">${p}</span>`).join('')}</span>
                   <span class="share-label">${escapeHtml(e.shareLabel)}</span>
                   ${e.loggedByLabel ? `<span class="payer-label">${escapeHtml(e.loggedByLabel)}</span>` : ''}
+                  ${e.loggedAtLabel ? `<span class="payer-label faint">${escapeHtml(e.loggedAtLabel)}</span>` : ''}
                 </div>
               </div>
             </${tag}>`;
@@ -1355,6 +1391,7 @@ function renderAddSheet() {
         ? t('addSheet.hintCarriesAll', { name: nameOf(d.participantIds[0]) })
         : t('addSheet.hintEach', { amount: fmt(amt / d.participantIds.length) });
   const payer = activeMembers().find((u) => u.id === d.payerId) || state.me;
+  const draftDate = d.date || todayISO();
 
   return `
     <div class="sheet-overlay" data-action="sheet.close"></div>
@@ -1395,7 +1432,10 @@ function renderAddSheet() {
           <span class="avatar avatar-sm avatar--muted">${initials(payer.name)}</span>
           <span>${t('addSheet.payerPaid', { name: escapeHtml(payer.name) })}</span>
         </button>
-        <button class="date-btn" disabled>${t('addSheet.today')}</button>
+        <label class="date-btn">
+          <span>${draftDate === todayISO() ? t('addSheet.today') : fmtDate(draftDate)}</span>
+          <input type="date" data-field="draft.date" value="${draftDate}" max="${todayISO()}" />
+        </label>
       </div>
 
       <button class="btn-primary" style="margin-top:16px" data-action="draft.save" ${state.draftSaving ? 'disabled' : ''}>${state.draftSaving ? t('common.saving') : t('addSheet.save')}</button>
@@ -2069,6 +2109,7 @@ function handleFieldInput(field, value) {
     case 'signup.householdId': state.signupForm.householdId = value; break;
     case 'draft.amount': state.draft.amount = value ? fmt(parseAmount(value)) : ''; break;
     case 'draft.desc': state.draft.desc = value; break;
+    case 'draft.date': state.draft.date = value || todayISO(); break;
     case 'settle.amount': state.settleDraft.amount = value ? fmt(parseAmount(value)) : ''; break;
     case 'invite.name': state.inviteForm.name = value; break;
     case 'invite.email': state.inviteForm.email = value; break;

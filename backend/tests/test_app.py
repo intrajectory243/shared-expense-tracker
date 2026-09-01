@@ -1,3 +1,6 @@
+from datetime import date, timedelta
+
+
 def signup(client, email, household_name=None, household_id=None, name="Test User", password="password123"):
     payload = {"email": email, "password": password, "name": name}
     if household_name:
@@ -138,6 +141,61 @@ def test_expense_split_and_balance_calculation(client):
     balances_after = client.get("/balances", headers=auth_headers(member_token)).json()
     assert balances_after["balances"] == []
     assert balances_after["settlements_to_make"] == []
+
+
+def test_expense_can_be_backdated_but_not_future_dated(client):
+    admin = signup(client, "admin@example.com", household_name="Roommates").json()
+    token = login(client, "admin@example.com")
+
+    past = "2026-01-15"
+    ok = client.post(
+        "/expenses",
+        json={"amount": 20.0, "description": "Old taxi", "participant_ids": [admin["id"]], "date": past},
+        headers=auth_headers(token),
+    )
+    assert ok.status_code == 201, ok.text
+    body = ok.json()
+    # The chosen date is the expense's date; created_at is still a real
+    # "when it was entered" timestamp, independent of it.
+    assert body["date"] == past
+    assert body["created_at"][:10] != past
+
+    future = (date.today() + timedelta(days=3)).isoformat()
+    bad = client.post(
+        "/expenses",
+        json={"amount": 5.0, "description": "Time machine", "participant_ids": [admin["id"]], "date": future},
+        headers=auth_headers(token),
+    )
+    assert bad.status_code == 422, bad.text
+
+    # A client a calendar day ahead of the server (UTC) is still fine.
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    edge = client.post(
+        "/expenses",
+        json={"amount": 5.0, "description": "Late-night snack", "participant_ids": [admin["id"]], "date": tomorrow},
+        headers=auth_headers(token),
+    )
+    assert edge.status_code == 201, edge.text
+
+
+def test_settlement_response_carries_its_creation_timestamp(client):
+    admin = signup(client, "admin@example.com", household_name="Roommates").json()
+    token = login(client, "admin@example.com")
+    member = signup(client, "member@example.com", household_id=admin["household_id"]).json()
+    client.patch(f"/users/{member['id']}/approve", json={"role": "member"}, headers=auth_headers(token))
+
+    client.post(
+        "/expenses",
+        json={"amount": 40.0, "description": "Dinner", "participant_ids": [admin["id"], member["id"]]},
+        headers=auth_headers(token),
+    )
+    client.post(
+        "/settlements",
+        json={"to_user_id": admin["id"], "amount": 20.0},
+        headers=auth_headers(login(client, "member@example.com")),
+    )
+    rows = client.get("/settlements", headers=auth_headers(token)).json()
+    assert rows and rows[0]["created_at"]
 
 
 def test_expense_only_splits_among_tagged_participants(client):

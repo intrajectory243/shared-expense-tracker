@@ -1,8 +1,23 @@
-from datetime import date as date_type, datetime
+from datetime import date as date_type, datetime, timedelta
+from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, EmailStr, Field
 
 from app.models import Currency, Language, UserRole, UserStatus
+
+
+def _not_future(v: date_type | None) -> date_type | None:
+    # One day of slack: the client sends its own local date, which can be a
+    # calendar day ahead of the server's (UTC) when a user is east of it.
+    if v is not None and v > date_type.today() + timedelta(days=1):
+        raise ValueError("date cannot be in the future")
+    return v
+
+
+# A user-chosen record date: optional, defaults to "today" server-side, never
+# in the future. Used for backdating an expense/settlement that happened
+# earlier than it was logged.
+RecordDate = Annotated[date_type | None, AfterValidator(_not_future)]
 
 
 # ---- Auth / Users ----
@@ -122,7 +137,7 @@ class ExpenseCreate(BaseModel):
     amount: float = Field(gt=0)
     description: str = Field(min_length=1, max_length=255)
     category: str = "general"
-    date: date_type | None = None
+    date: RecordDate = None
     participant_ids: list[str] = Field(min_length=1, description="Users this expense is split between")
     payer_id: str | None = Field(default=None, description="Defaults to the current user")
 
@@ -194,7 +209,7 @@ class VapidKeyOut(BaseModel):
 class SettlementCreate(BaseModel):
     to_user_id: str
     amount: float = Field(gt=0)
-    date: date_type | None = None
+    date: RecordDate = None
     from_user_id: str | None = Field(default=None, description="Defaults to the current user")
 
 
@@ -206,3 +221,4 @@ class SettlementOut(BaseModel):
     to_user_id: str
     amount: float
     date: date_type
+    created_at: datetime
