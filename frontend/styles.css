@@ -200,6 +200,18 @@ button { cursor: pointer; }
   white-space: nowrap;
 }
 
+.btn-pill-ghost {
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--border-mid);
+  border-radius: 99px;
+  background: var(--card);
+  color: var(--ink-soft);
+  font-size: 13.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .link-row { margin-top: auto; display: flex; flex-direction: column; gap: 12px; align-items: center; padding-top: 32px; }
 .link-row a, .link-row button {
   font-size: 14px; color: var(--ink-soft); text-decoration: none; background: none; border: 0; padding: 0;
@@ -318,6 +330,27 @@ button.history-row { width: 100%; border: 0; background: transparent; font: inhe
 .tag--settled { background: var(--sage-select-bg); color: var(--sage-soft-text); }
 .payer-label, .share-label { font-size: 12.5px; color: var(--ink-faint); }
 .parts-row { display: flex; gap: 3px; }
+
+/* Spending breakdown */
+.bd-range { margin-top: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.bd-range-dash { color: var(--ink-faint); }
+.bd-section { margin-top: 28px; }
+.bd-section > .eyebrow { padding-bottom: 9px; border-bottom: 1px solid var(--border-mid); display: block; }
+.bd-row {
+  display: grid; grid-template-columns: 1fr auto; align-items: baseline; column-gap: 12px;
+  width: 100%; padding: 12px 2px; border-bottom: 1px solid var(--border-soft);
+  border-inline: 0; border-top: 0; background: transparent; font: inherit; color: inherit; text-align: start;
+}
+.bd-name { font-size: 15px; min-width: 0; }
+.bd-amount { font-size: 15px; }
+.bd-bar { grid-column: 1 / -1; margin-top: 7px; height: 3px; border-radius: 2px; background: var(--border-soft); overflow: hidden; }
+.bd-bar-fill { block-size: 100%; background: var(--ink-faint); }
+.bd-row--total { border-bottom: 0; border-top: 1px solid var(--border-mid); margin-top: 2px; font-weight: 500; }
+.bd-row--person { cursor: pointer; }
+.bd-row--open { border-bottom-color: transparent; }
+.bd-subrows { padding-inline-start: 14px; }
+.bd-row--sub { padding: 8px 2px; }
+.bd-row--sub .bd-name, .bd-row--sub .bd-amount { font-size: 13.5px; color: var(--ink-soft); }
 
 /* Chips */
 .chip-row { display: flex; flex-wrap: wrap; gap: 7px; }

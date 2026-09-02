@@ -87,6 +87,11 @@ const state = {
   acceptInvite: null,
   editShares: { expenseId: null, amount: 0, draft: {} },
   editSharesSaving: false,
+  // Spending breakdown screen: a day-accurate date range + which person row
+  // is expanded. Range is set the first time the screen is opened.
+  breakdownFrom: null,
+  breakdownTo: null,
+  breakdownPerson: null,
   pushEnabled: false,
   draftCurrency: 'toman',
   currencySaving: false,
@@ -875,9 +880,11 @@ function toggleDraftPerson(id) {
 // kept off-screen (styling a date input to fill a button is unreliable
 // across browsers, especially Safari). showPicker() opens the native
 // picker from the button's click gesture; .click() is the fallback for
-// anything without showPicker.
-function openDatePicker() {
-  const input = document.querySelector('.date-hidden-input');
+// anything without showPicker. The button carries data-picker-target with
+// the id of its hidden input (one screen can have several).
+function openDatePicker(btn) {
+  const id = btn && btn.dataset ? btn.dataset.pickerTarget : null;
+  const input = id ? document.getElementById(id) : document.querySelector('.date-hidden-input');
   if (!input) return;
   try {
     if (typeof input.showPicker === 'function') input.showPicker();
@@ -1128,6 +1135,75 @@ function buildHistoryGroups() {
   }));
 }
 
+// ---------- spending breakdown ----------
+
+// Every rollup here is client-side arithmetic over state.expenses, which
+// refreshData() loads in full (GET /expenses is unbounded). If that
+// endpoint ever gets paginated this must move to a server aggregation.
+
+function firstOfThisMonthISO() {
+  return todayISO().slice(0, 8) + '01';
+}
+
+function breakdownPresetRange(preset) {
+  const today = todayISO();
+  const p = (n) => String(n).padStart(2, '0');
+  if (preset === 'lastMonth') {
+    const [y, m] = today.split('-').map(Number);
+    const lm = m === 1 ? 12 : m - 1;
+    const ly = m === 1 ? y - 1 : y;
+    const lastDay = new Date(ly, lm, 0).getDate();
+    return { from: `${ly}-${p(lm)}-01`, to: `${ly}-${p(lm)}-${p(lastDay)}` };
+  }
+  if (preset === 'all') {
+    const earliest = state.expenses.map((e) => e.date).sort()[0];
+    return { from: earliest || today, to: today };
+  }
+  return { from: firstOfThisMonthISO(), to: today };
+}
+
+function buildBreakdown() {
+  const { breakdownFrom: from, breakdownTo: to } = state;
+  const inRange = state.expenses.filter((e) => e.date >= from && e.date <= to);
+
+  const catMap = new Map();
+  const personMap = new Map();
+  let grand = 0;
+
+  for (const e of inRange) {
+    grand += e.amount;
+    const c = catMap.get(e.category) || { total: 0, count: 0 };
+    c.total += e.amount;
+    c.count += 1;
+    catMap.set(e.category, c);
+
+    const totalWeight = e.shares.reduce((a, s) => a + s.share, 0) || 1;
+    for (const s of e.shares) {
+      const amt = (e.amount * s.share) / totalWeight;
+      const name = (e.participants.find((pp) => pp.id === s.user_id) || {}).name || nameOf(s.user_id);
+      const person = personMap.get(s.user_id) || { id: s.user_id, name, total: 0, byCat: new Map() };
+      person.total += amt;
+      person.byCat.set(e.category, (person.byCat.get(e.category) || 0) + amt);
+      personMap.set(s.user_id, person);
+    }
+  }
+
+  const byCategory = [...catMap.entries()]
+    .map(([cat, v]) => ({ cat, total: v.total, count: v.count }))
+    .sort((a, b) => b.total - a.total);
+
+  const byPerson = [...personMap.values()]
+    .map((pn) => ({
+      id: pn.id,
+      name: pn.name,
+      total: pn.total,
+      byCat: [...pn.byCat.entries()].map(([cat, total]) => ({ cat, total })).sort((a, b) => b.total - a.total),
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  return { from, to, grand, byCategory, byPerson, isEmpty: inRange.length === 0 };
+}
+
 // ---------- render: screens ----------
 
 function renderLoading() {
@@ -1356,7 +1432,10 @@ function renderHistory() {
           <div style="font-family:var(--font-serif);font-size:32px;line-height:1.1">${t('history.title')}</div>
           <div style="margin-top:7px;font-size:13.5px" class="muted">${t(square ? 'home.eyebrowSquare' : owed ? 'home.eyebrowOwed' : 'home.eyebrowOwe')} <span class="tabular" style="color:var(--ink)">${fmt(Math.abs(net))}</span></div>
         </div>
-        ${showSettle ? `<button class="btn-pill-sage" data-action="openSettle">${t('common.settleUp')}</button>` : ''}
+        <div style="display:flex;flex-direction:column;gap:8px;align-items:flex-end">
+          ${showSettle ? `<button class="btn-pill-sage" data-action="openSettle">${t('common.settleUp')}</button>` : ''}
+          ${!isEmpty ? `<button class="btn-pill-ghost" data-action="toBreakdown">${t('breakdown.link')}</button>` : ''}
+        </div>
       </div>
 
       ${isEmpty ? `<div class="empty-state" style="margin-top:36px"><p style="margin:0">${t('history.emptyLine1')}<br />${t('history.emptyLine2')}</p></div>` : ''}
@@ -1390,6 +1469,77 @@ function renderHistory() {
         </div>
       `).join('')}
       <div style="height:20px"></div>
+    </div>
+  `;
+}
+
+function renderBreakdown() {
+  if (!state.breakdownFrom || !state.breakdownTo) {
+    const r = breakdownPresetRange('thisMonth');
+    state.breakdownFrom = r.from;
+    state.breakdownTo = r.to;
+  }
+  const b = buildBreakdown();
+  const maxCat = b.byCategory.length ? b.byCategory[0].total : 0;
+
+  return `
+    <div class="screen">
+      <div class="topbar">
+        <button class="icon-btn" data-action="toHistory"><div class="chevron"></div></button>
+        <div class="eyebrow">${t('breakdown.link')}</div>
+      </div>
+
+      <div style="margin-top:26px;font-family:var(--font-serif);font-size:32px;line-height:1.1">${t('breakdown.title')}</div>
+
+      <div class="bd-range">
+        <button type="button" class="date-btn" data-action="breakdown.pickFrom" data-picker-target="bdFromInput">${t('breakdown.from')} · ${fmtDate(b.from)}</button>
+        <input type="date" id="bdFromInput" class="date-hidden-input" data-field="breakdown.from" value="${b.from}" max="${b.to}" tabindex="-1" aria-hidden="true" />
+        <span class="bd-range-dash">–</span>
+        <button type="button" class="date-btn" data-action="breakdown.pickTo" data-picker-target="bdToInput">${t('breakdown.to')} · ${fmtDate(b.to)}</button>
+        <input type="date" id="bdToInput" class="date-hidden-input" data-field="breakdown.to" value="${b.to}" min="${b.from}" max="${todayISO()}" tabindex="-1" aria-hidden="true" />
+      </div>
+      <div class="chip-row" style="margin-top:10px">
+        <button class="chip" data-action="breakdown.preset" data-preset="thisMonth">${t('breakdown.presetThisMonth')}</button>
+        <button class="chip" data-action="breakdown.preset" data-preset="lastMonth">${t('breakdown.presetLastMonth')}</button>
+        <button class="chip" data-action="breakdown.preset" data-preset="all">${t('breakdown.presetAll')}</button>
+      </div>
+
+      ${b.isEmpty ? `<div class="empty-state" style="margin-top:40px"><p style="margin:0">${t('breakdown.empty')}</p></div>` : `
+        <div class="bd-section">
+          <div class="eyebrow">${t('breakdown.byCategory')}</div>
+          ${b.byCategory.map((c) => `
+            <div class="bd-row">
+              <span class="bd-name">${escapeHtml(catLabel(c.cat))}</span>
+              <span class="bd-amount tabular">${fmt(c.total)}</span>
+              <div class="bd-bar"><div class="bd-bar-fill" style="inline-size:${maxCat > 0 ? Math.round((c.total / maxCat) * 100) : 0}%"></div></div>
+            </div>
+          `).join('')}
+          <div class="bd-row bd-row--total">
+            <span class="bd-name">${t('breakdown.total')}</span>
+            <span class="bd-amount tabular">${fmt(b.grand)}</span>
+          </div>
+        </div>
+
+        <div class="bd-section">
+          <div class="eyebrow">${t('breakdown.byPerson')}</div>
+          ${b.byPerson.map((pn) => {
+            const open = state.breakdownPerson === pn.id;
+            return `
+            <button class="bd-row bd-row--person ${open ? 'bd-row--open' : ''}" data-action="breakdown.togglePerson" data-user-id="${escapeHtml(pn.id)}">
+              <span class="bd-name">${escapeHtml(pn.name)}</span>
+              <span class="bd-amount tabular">${fmt(pn.total)}</span>
+            </button>
+            ${open ? `<div class="bd-subrows">${pn.byCat.map((c) => `
+              <div class="bd-row bd-row--sub">
+                <span class="bd-name">${escapeHtml(catLabel(c.cat))}</span>
+                <span class="bd-amount tabular">${fmt(c.total)}</span>
+              </div>
+            `).join('')}</div>` : ''}
+          `;
+          }).join('')}
+        </div>
+      `}
+      <div style="height:24px"></div>
     </div>
   `;
 }
@@ -1448,8 +1598,8 @@ function renderAddSheet() {
           <span class="avatar avatar-sm avatar--muted">${initials(payer.name)}</span>
           <span>${t('addSheet.payerPaid', { name: escapeHtml(payer.name) })}</span>
         </button>
-        <button type="button" class="date-btn" data-action="draft.pickDate">${draftDate === todayISO() ? t('addSheet.today') : fmtDate(draftDate)}</button>
-        <input type="date" class="date-hidden-input" data-field="draft.date" value="${draftDate}" max="${todayISO()}" tabindex="-1" aria-hidden="true" />
+        <button type="button" class="date-btn" data-action="draft.pickDate" data-picker-target="draftDateInput">${draftDate === todayISO() ? t('addSheet.today') : fmtDate(draftDate)}</button>
+        <input type="date" id="draftDateInput" class="date-hidden-input" data-field="draft.date" value="${draftDate}" max="${todayISO()}" tabindex="-1" aria-hidden="true" />
       </div>
 
       <button class="btn-primary" style="margin-top:16px" data-action="draft.save" ${state.draftSaving ? 'disabled' : ''}>${state.draftSaving ? t('common.saving') : t('addSheet.save')}</button>
@@ -2051,6 +2201,7 @@ function buildHtml() {
     case 'pending': html = renderPending(); break;
     case 'home': html = renderHome(); break;
     case 'history': html = renderHistory(); break;
+    case 'breakdown': html = renderBreakdown(); break;
     case 'household': html = renderHousehold(); break;
     case 'accept-invite': html = renderAcceptInvite(); break;
     case 'restored': html = renderRestoredScreen(); break;
@@ -2124,6 +2275,14 @@ function handleFieldInput(field, value) {
     case 'draft.amount': state.draft.amount = value ? fmt(parseAmount(value)) : ''; break;
     case 'draft.desc': state.draft.desc = value; break;
     case 'draft.date': state.draft.date = value || todayISO(); break;
+    case 'breakdown.from':
+      state.breakdownFrom = value || firstOfThisMonthISO();
+      if (state.breakdownFrom > state.breakdownTo) state.breakdownTo = state.breakdownFrom;
+      break;
+    case 'breakdown.to':
+      state.breakdownTo = value || todayISO();
+      if (state.breakdownTo < state.breakdownFrom) state.breakdownFrom = state.breakdownTo;
+      break;
     case 'settle.amount': state.settleDraft.amount = value ? fmt(parseAmount(value)) : ''; break;
     case 'invite.name': state.inviteForm.name = value; break;
     case 'invite.email': state.inviteForm.email = value; break;
@@ -2164,6 +2323,28 @@ function handleAction(action, el) {
     case 'sheet.close': state.sheet = null; return render();
     case 'toHistory': state.sheet = null; state.route = 'history'; return render();
     case 'toHome': state.sheet = null; state.route = 'home'; return render();
+    case 'toBreakdown': {
+      if (!state.breakdownFrom) {
+        const r = breakdownPresetRange('thisMonth');
+        state.breakdownFrom = r.from;
+        state.breakdownTo = r.to;
+      }
+      state.breakdownPerson = null;
+      state.route = 'breakdown';
+      return render();
+    }
+    case 'breakdown.pickFrom':
+    case 'breakdown.pickTo':
+      return openDatePicker(el);
+    case 'breakdown.preset': {
+      const r = breakdownPresetRange(el.dataset.preset);
+      state.breakdownFrom = r.from;
+      state.breakdownTo = r.to;
+      return render();
+    }
+    case 'breakdown.togglePerson':
+      state.breakdownPerson = state.breakdownPerson === el.dataset.userId ? null : el.dataset.userId;
+      return render();
     case 'toHousehold': return goHousehold();
     case 'household.toggleRole': return toggleRequestRole(el.dataset.userId);
     case 'household.approve': return approveRequest(el.dataset.userId);
@@ -2197,7 +2378,7 @@ function handleAction(action, el) {
     case 'draft.pickCategory': state.draft.category = el.dataset.cat; return render();
     case 'draft.togglePerson': return toggleDraftPerson(el.dataset.userId);
     case 'draft.cyclePayer': return cyclePayer();
-    case 'draft.pickDate': return openDatePicker();
+    case 'draft.pickDate': return openDatePicker(el);
     case 'draft.save': return saveExpense();
     case 'history.editShares': return openEditSharesSheet(Number(el.dataset.expenseId));
     case 'shares.togglePerson': return toggleShareParticipant(el.dataset.userId);
