@@ -4,6 +4,8 @@ A self-hosted, source-available expense tracker for splitting shared costs betwe
 
 **Status: `0.9.4` — beta.** Live at [halves.ir](https://halves.ir). Core flows are built and tested end-to-end; the `0.x` version line means the app is still beta and the 1.0 stability commitment hasn't been made yet.
 
+**There's a public instance at [halves.ir](https://halves.ir) that I run and keep on the latest version** — you're welcome to use it instead of standing up your own. What that means for your data is spelled out in [Using the hosted instance](#using-the-hosted-instance) below.
+
 Created by [intrajectory243](https://github.com/intrajectory243), built collaboratively with [Claude Code](https://claude.com/claude-code).
 
 ---
@@ -13,6 +15,20 @@ Created by [intrajectory243](https://github.com/intrajectory243), built collabor
 Most shared-expense apps try to do too much. Halves is built around one design principle that applies to every feature: **keep it dead simple.** Log an expense in a few taps, see the balance front and center, and don't make people think about anything else. It's a web app rather than separate iOS/Android apps specifically to avoid platform fragmentation — one codebase, works on any phone or laptop with a browser.
 
 It's self-hosted by design: you run your own instance (Docker or a plain Python process), pointed at your own domain if you want one, with your own SQLite file as the source of truth. No accounts on a third-party service, no data leaving your server.
+
+## Using the hosted instance
+
+[halves.ir](https://halves.ir) is a personal instance I maintain. I keep it updated and intend to keep it running, but it's a one-person hobby project — no company, no SLA, no guarantees. Use it freely; if you'd rather own every byte, self-hosting (below) gives you exactly that.
+
+**What it stores:** your email, a bcrypt hash of your password (never the password itself), your display name and language, and the expenses, settlements, and household membership you create — descriptions and amounts as you type them.
+
+**Who can see it:** the people in your household, and me. As the operator I have database access — same as anyone running any self-hosted app. I don't browse household data except to debug something you've reported, there are no analytics, ads, or third-party trackers in the app, and nothing is shared or sold.
+
+**Current gaps:** there's no self-service account or data deletion yet — "leaving" a household hides you but keeps your past entries so everyone else's balances stay correct. Reach me if you want your data actually removed. Password resets also go through me for now.
+
+**Caveats:** beta software; data is not encrypted at rest beyond the disk itself; I take periodic database backups.
+
+**Getting in touch:** contact options are on [my site](https://intrajectory243.github.io/) — for questions, and to ask for your data to be deleted.
 
 ## Features
 
