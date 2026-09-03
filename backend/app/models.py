@@ -149,6 +149,15 @@ class Expense(HouseholdBase):
     date: Mapped[date_type] = mapped_column(Date, default=date_type.today)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Soft delete: NULL = live, non-NULL = in the trash (an admin deleted it,
+    # and an opportunistic purge will remove it for good once it's older than
+    # settings.trash_retention_days). A soft-deleted expense drops out of
+    # history, the balance math, and every non-admin view immediately;
+    # restoring it (clearing these) puts it back exactly as it was.
+    # deleted_by_id crosses into the shared file, so it's a plain str, not a FK.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None, index=True)
+    deleted_by_id: Mapped[str | None] = mapped_column(String(36), default=None)
+
     participant_shares: Mapped[list["ExpenseParticipant"]] = relationship(
         back_populates="expense", cascade="all, delete-orphan"
     )
@@ -172,6 +181,11 @@ class Settlement(HouseholdBase):
     amount: Mapped[float] = mapped_column(Float)
     date: Mapped[date_type] = mapped_column(Date, default=date_type.today)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Soft delete -- see Expense.deleted_at. Either party or a household admin
+    # can delete a settlement; only an admin can restore or purge it early.
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None, index=True)
+    deleted_by_id: Mapped[str | None] = mapped_column(String(36), default=None)
 
 
 class BalanceCache(HouseholdBase):

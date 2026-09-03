@@ -2,10 +2,11 @@ from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import func
 
-from app.balances import get_cached_balance_summary, invalidate_balance_cache
+from app.balances import get_cached_balance_summary, invalidate_balance_cache, purge_expired_trash
 from app.database import get_db
-from app.dependencies import get_household_db, require_household
+from app.dependencies import get_current_admin, get_household_db, require_household
 from app.models import Settlement, User
 from app.schemas import BalanceSummary, SettlementCreate, SettlementOut
 
@@ -18,6 +19,10 @@ def read_balances(
     db: Session = Depends(get_db),
     hh_db: Session = Depends(get_household_db),
 ):
+    # Opportunistic trash cleanup rides on the balance read -- see
+    # app/balances.py::purge_expired_trash. Runs before the (possibly cached)
+    # summary; purging trashed rows never affects the balance result.
+    purge_expired_trash(hh_db, user.household_id)
     return get_cached_balance_summary(hh_db, db, user.household_id)
 
 
@@ -63,12 +68,74 @@ def create_settlement(
 
 @router.get("/settlements", response_model=list[SettlementOut])
 def list_settlements(
+    include_deleted: bool = False,
     user: User = Depends(require_household),
     hh_db: Session = Depends(get_household_db),
 ):
-    return (
+    query = hh_db.query(Settlement).filter(Settlement.household_id == user.household_id)
+    if not (include_deleted and user.is_admin):
+        query = query.filter(Settlement.deleted_at.is_(None))
+    return query.order_by(Settlement.date.desc(), Settlement.id.desc()).all()
+
+
+@router.delete("/settlements/{settlement_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_settlement(
+    settlement_id: int,
+    purge: bool = False,
+    user: User = Depends(require_household),
+    hh_db: Session = Depends(get_household_db),
+):
+    """Soft delete by default -- either party to the settlement or a household
+    admin can do it. `?purge=true` (admin only) hard-deletes a row already in
+    the trash. Mirrors DELETE /expenses/{id}."""
+    settlement = (
         hh_db.query(Settlement)
-        .filter(Settlement.household_id == user.household_id)
-        .order_by(Settlement.date.desc(), Settlement.id.desc())
-        .all()
+        .filter(Settlement.id == settlement_id, Settlement.household_id == user.household_id)
+        .first()
     )
+    if not settlement:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Settlement not found")
+
+    if purge:
+        if not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        if settlement.deleted_at is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Delete the settlement before purging it")
+        hh_db.delete(settlement)
+        hh_db.commit()
+        return
+
+    if settlement.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Settlement is already deleted")
+    is_party = user.id in (settlement.from_user_id, settlement.to_user_id)
+    if not is_party and not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only a party to this settlement or an admin can delete it"
+        )
+    settlement.deleted_at = func.now()
+    settlement.deleted_by_id = user.id
+    invalidate_balance_cache(hh_db, user.household_id)
+    hh_db.commit()
+
+
+@router.post("/settlements/{settlement_id}/restore", response_model=SettlementOut)
+def restore_settlement(
+    settlement_id: int,
+    admin: User = Depends(get_current_admin),
+    hh_db: Session = Depends(get_household_db),
+):
+    settlement = (
+        hh_db.query(Settlement)
+        .filter(Settlement.id == settlement_id, Settlement.household_id == admin.household_id)
+        .first()
+    )
+    if not settlement:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Settlement not found")
+    if settlement.deleted_at is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Settlement is not deleted")
+    settlement.deleted_at = None
+    settlement.deleted_by_id = None
+    invalidate_balance_cache(hh_db, admin.household_id)
+    hh_db.commit()
+    hh_db.refresh(settlement)
+    return settlement

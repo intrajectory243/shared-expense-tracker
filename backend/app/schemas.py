@@ -166,6 +166,8 @@ class ExpenseOut(BaseModel):
     created_by: UserOut
     participants: list[UserOut]
     shares: list[ExpenseShare] = Field(validation_alias="participant_shares")
+    deleted_at: datetime | None = None
+    deleted_by_id: str | None = None
 
 
 # ---- Balances ----
@@ -222,3 +224,5 @@ class SettlementOut(BaseModel):
     amount: float
     date: date_type
     created_at: datetime
+    deleted_at: datetime | None = None
+    deleted_by_id: str | None = None

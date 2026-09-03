@@ -21,5 +21,10 @@ class Settings(BaseSettings):
     # whole instance out and assign admins out-of-band instead.
     bootstrap_admin: bool = True
 
+    # A deleted expense/settlement lingers in the trash this many days so an
+    # admin can undo a mistake, then an opportunistic purge (triggered on the
+    # household's next balance read or expense list) removes it for good.
+    trash_retention_days: int = 30
+
 
 settings = Settings()

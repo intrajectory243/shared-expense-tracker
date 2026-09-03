@@ -2,8 +2,9 @@ from datetime import date as date_type
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql import func
 
-from app.balances import invalidate_balance_cache
+from app.balances import invalidate_balance_cache, purge_expired_trash
 from app.database import get_db
 from app.dependencies import get_current_active_user, get_current_admin, get_household_db, require_household
 from app.models import User, UserStatus, Expense, ExpenseParticipant
@@ -114,16 +115,20 @@ def create_expense(
 
 @router.get("", response_model=list[ExpenseOut])
 def list_expenses(
+    include_deleted: bool = False,
     user: User = Depends(require_household),
     db: Session = Depends(get_db),
     hh_db: Session = Depends(get_household_db),
 ):
-    expenses = (
-        _with_participant_shares(hh_db.query(Expense))
-        .filter(Expense.household_id == user.household_id)
-        .order_by(Expense.date.desc(), Expense.id.desc())
-        .all()
-    )
+    # One of the two read paths that opportunistically clears expired trash
+    # (the other is GET /balances) -- see app/balances.py::purge_expired_trash.
+    purge_expired_trash(hh_db, user.household_id)
+
+    query = _with_participant_shares(hh_db.query(Expense)).filter(Expense.household_id == user.household_id)
+    # Trashed rows are admin-only; everyone else always gets just the live list.
+    if not (include_deleted and user.is_admin):
+        query = query.filter(Expense.deleted_at.is_(None))
+    expenses = query.order_by(Expense.date.desc(), Expense.id.desc()).all()
     return _stitch_expense_users(db, expenses)
 
 
@@ -136,7 +141,11 @@ def get_expense(
 ):
     expense = (
         _with_participant_shares(hh_db.query(Expense))
-        .filter(Expense.id == expense_id, Expense.household_id == user.household_id)
+        .filter(
+            Expense.id == expense_id,
+            Expense.household_id == user.household_id,
+            Expense.deleted_at.is_(None),
+        )
         .first()
     )
     if not expense:
@@ -152,7 +161,15 @@ def update_expense_shares(
     db: Session = Depends(get_db),
     hh_db: Session = Depends(get_household_db),
 ):
-    expense = hh_db.query(Expense).filter(Expense.id == expense_id, Expense.household_id == admin.household_id).first()
+    expense = (
+        hh_db.query(Expense)
+        .filter(
+            Expense.id == expense_id,
+            Expense.household_id == admin.household_id,
+            Expense.deleted_at.is_(None),
+        )
+        .first()
+    )
     if not expense:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
 
@@ -173,14 +190,59 @@ def update_expense_shares(
 @router.delete("/{expense_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_expense(
     expense_id: int,
+    purge: bool = False,
     user: User = Depends(require_household),
     hh_db: Session = Depends(get_household_db),
 ):
+    """Soft delete by default -- the expense moves to the trash, drops out of
+    history and the balance math, and is undeletable by an admin until an
+    opportunistic purge removes it once it's older than the retention window.
+    `?purge=true` (admin only) hard-deletes a row that's already in the trash,
+    right now."""
     expense = hh_db.query(Expense).filter(Expense.id == expense_id, Expense.household_id == user.household_id).first()
     if not expense:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
+
+    if purge:
+        if not user.is_admin:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+        if expense.deleted_at is None:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Delete the expense before purging it")
+        hh_db.delete(expense)
+        hh_db.commit()  # no cache invalidation: a trashed row was already out of the balance math
+        return
+
+    if expense.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Expense is already deleted")
     if expense.payer_id != user.id and not user.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the payer or an admin can delete this expense")
-    hh_db.delete(expense)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only the payer or an admin can delete this expense"
+        )
+    expense.deleted_at = func.now()
+    expense.deleted_by_id = user.id
     invalidate_balance_cache(hh_db, user.household_id)
     hh_db.commit()
+
+
+@router.post("/{expense_id}/restore", response_model=ExpenseOut)
+def restore_expense(
+    expense_id: int,
+    admin: User = Depends(get_current_admin),
+    db: Session = Depends(get_db),
+    hh_db: Session = Depends(get_household_db),
+):
+    expense = (
+        _with_participant_shares(hh_db.query(Expense))
+        .filter(Expense.id == expense_id, Expense.household_id == admin.household_id)
+        .first()
+    )
+    if not expense:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Expense not found")
+    if expense.deleted_at is None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Expense is not deleted")
+    expense.deleted_at = None
+    expense.deleted_by_id = None
+    invalidate_balance_cache(hh_db, admin.household_id)
+    hh_db.commit()
+    hh_db.refresh(expense)
+    return _stitch_expense_users(db, [expense])[0]

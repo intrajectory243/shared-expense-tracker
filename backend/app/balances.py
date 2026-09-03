@@ -14,9 +14,11 @@ net balance is zeroed out, minimizing the number of payments needed.
 """
 
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session, selectinload
 
+from app.config import settings
 from app.models import BalanceCache, Expense, Settlement, User
 from app.schemas import BalanceEntry, BalanceSummary, DebtEntry
 
@@ -35,7 +37,7 @@ def compute_net_balances(hh_db: Session, household_id: int) -> dict[str, float]:
     # round-trip overhead once a household has hundreds+).
     expenses = (
         hh_db.query(Expense)
-        .filter(Expense.household_id == household_id)
+        .filter(Expense.household_id == household_id, Expense.deleted_at.is_(None))
         .options(selectinload(Expense.participant_shares))
         .all()
     )
@@ -48,7 +50,11 @@ def compute_net_balances(hh_db: Session, household_id: int) -> dict[str, float]:
         for ps in shares:
             net[ps.user_id] -= expense.amount * (ps.share / total_weight)
 
-    settlements = hh_db.query(Settlement).filter(Settlement.household_id == household_id).all()
+    settlements = (
+        hh_db.query(Settlement)
+        .filter(Settlement.household_id == household_id, Settlement.deleted_at.is_(None))
+        .all()
+    )
     for settlement in settlements:
         net[settlement.from_user_id] += settlement.amount
         net[settlement.to_user_id] -= settlement.amount
@@ -126,6 +132,37 @@ def get_cached_balance_summary(hh_db: Session, db: Session, household_id: int) -
     hh_db.merge(BalanceCache(household_id=household_id, payload=summary.model_dump_json()))
     hh_db.commit()
     return summary
+
+
+def purge_expired_trash(hh_db: Session, household_id: int) -> int:
+    """Hard-delete soft-deleted expenses/settlements older than the retention
+    window. Called opportunistically from the read paths (GET /balances, GET
+    /expenses) rather than on a schedule -- a household nobody opens just keeps
+    its trash harmlessly until someone visits. Doesn't touch the balance cache:
+    these rows were already excluded from the balance math the moment they were
+    soft-deleted, so removing them for good changes nothing. Commits its own
+    work only when it actually deleted something."""
+    if settings.trash_retention_days <= 0:
+        return 0
+    # Compare in Python against a naive UTC cutoff: deleted_at is written with
+    # func.now() (SQLite's CURRENT_TIMESTAMP, i.e. naive UTC), so a SQL "<"
+    # against a Python datetime with a tz offset would do a broken string
+    # compare. There are only ever a handful of trashed rows per household.
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=settings.trash_retention_days)
+    removed = 0
+    for model in (Expense, Settlement):
+        trashed = (
+            hh_db.query(model)
+            .filter(model.household_id == household_id, model.deleted_at.is_not(None))
+            .all()
+        )
+        for row in trashed:
+            if row.deleted_at is not None and row.deleted_at < cutoff:
+                hh_db.delete(row)
+                removed += 1
+    if removed:
+        hh_db.commit()
+    return removed
 
 
 def invalidate_balance_cache(hh_db: Session, household_id: int) -> None:

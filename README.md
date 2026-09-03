@@ -2,7 +2,7 @@
 
 A self-hosted, source-available expense tracker for splitting shared costs between roommates (or any group) — one running balance, minimal taps to log an expense, no clutter.
 
-**Status: `0.9.5` — beta.** Live at [halves.ir](https://halves.ir). Core flows are built and tested end-to-end; the `0.x` version line means the app is still beta and the 1.0 stability commitment hasn't been made yet.
+**Status: `0.9.6` — beta.** Live at [halves.ir](https://halves.ir). Core flows are built and tested end-to-end; the `0.x` version line means the app is still beta and the 1.0 stability commitment hasn't been made yet.
 
 **There's a public instance at [halves.ir](https://halves.ir) that I run and keep on the latest version** — you're welcome to use it instead of standing up your own. What that means for your data is spelled out in [Using the hosted instance](#using-the-hosted-instance) below.
 

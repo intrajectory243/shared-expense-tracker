@@ -189,8 +189,12 @@ def restore_household(
                 referenced_ids.update(
                     row[0] for row in conn.execute(f"SELECT DISTINCT {column} FROM {table}").fetchall()
                 )
-        expenses_restored = conn.execute("SELECT COUNT(*) FROM expenses").fetchone()[0]
-        settlements_restored = conn.execute("SELECT COUNT(*) FROM settlements").fetchone()[0]
+        # Count only live rows -- trashed ones travel with the file but aren't
+        # what the admin means by "how much did this restore bring back".
+        expenses_restored = conn.execute("SELECT COUNT(*) FROM expenses WHERE deleted_at IS NULL").fetchone()[0]
+        settlements_restored = conn.execute(
+            "SELECT COUNT(*) FROM settlements WHERE deleted_at IS NULL"
+        ).fetchone()[0]
     finally:
         conn.close()
 

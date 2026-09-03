@@ -87,6 +87,11 @@ const state = {
   acceptInvite: null,
   editShares: { expenseId: null, amount: 0, draft: {} },
   editSharesSaving: false,
+  // Trash (admin only): soft-deleted expenses/settlements, kept for a grace
+  // window so a mistaken delete can be undone. Populated in refreshData.
+  deletedExpenses: [],
+  deletedSettlements: [],
+  trashOpen: false,
   // Spending breakdown screen: a day-accurate date range + which person row
   // is expanded. Range is set the first time the screen is opened.
   breakdownFrom: null,
@@ -496,7 +501,14 @@ async function toggleNotifications() {
 async function refreshData() {
   const isAdmin = state.me.role === 'admin';
   const calls = [api('/users'), api('/expenses'), api('/balances'), api('/settlements'), api('/households', { auth: false }), api('/categories')];
-  if (isAdmin) calls.push(api('/users/pending'), api('/users/former'));
+  if (isAdmin) {
+    calls.push(
+      api('/users/pending'),
+      api('/users/former'),
+      api('/expenses?include_deleted=true'),
+      api('/settlements?include_deleted=true'),
+    );
+  }
   const results = await Promise.all(calls);
   state.users = results[0];
   state.expenses = results[1];
@@ -506,6 +518,9 @@ async function refreshData() {
   state.catList = results[5];
   state.pending = isAdmin ? results[6] : [];
   state.former = isAdmin ? results[7] : [];
+  state.deletedExpenses = isAdmin ? results[8].filter((e) => e.deleted_at) : [];
+  state.deletedSettlements = isAdmin ? results[9].filter((s) => s.deleted_at) : [];
+  if (!state.deletedExpenses.length && !state.deletedSettlements.length) state.trashOpen = false;
 }
 
 async function loadHome() {
@@ -1044,6 +1059,58 @@ async function saveShares() {
   }
 }
 
+async function deleteExpenseFromSheet() {
+  const es = state.editShares;
+  const expense = state.expenses.find((e) => e.id === es.expenseId);
+  state.editSharesSaving = true;
+  render();
+  try {
+    await api(`/expenses/${es.expenseId}`, { method: 'DELETE' });
+    state.sheet = null;
+    state.editSharesSaving = false;
+    await refreshData();
+    flash(t('toast.expenseDeleted', { desc: expense ? expense.description : '' }));
+  } catch (e) {
+    state.editSharesSaving = false;
+    flash(e.message || t('toast.couldNotDeleteExpense'));
+    render();
+  }
+}
+
+async function restoreExpense(id) {
+  try {
+    await api(`/expenses/${id}/restore`, { method: 'POST' });
+    await refreshData();
+    flash(t('toast.expenseRestored'));
+  } catch (e) {
+    flash(e.message || t('toast.couldNotRestore'));
+    render();
+  }
+}
+
+async function deleteSettlement(id) {
+  if (!window.confirm(t('trash.confirmSettlement'))) return;
+  try {
+    await api(`/settlements/${id}`, { method: 'DELETE' });
+    await refreshData();
+    flash(t('toast.settlementDeleted'));
+  } catch (e) {
+    flash(e.message || t('toast.couldNotDeleteSettlement'));
+    render();
+  }
+}
+
+async function restoreSettlement(id) {
+  try {
+    await api(`/settlements/${id}/restore`, { method: 'POST' });
+    await refreshData();
+    flash(t('toast.settlementRestored'));
+  } catch (e) {
+    flash(e.message || t('toast.couldNotRestore'));
+    render();
+  }
+}
+
 // ---------- settle up ----------
 
 function openSettleSheet() {
@@ -1111,7 +1178,7 @@ function buildHistoryGroups() {
     const fromName = nameOf(s.from_user_id);
     const toName = nameOf(s.to_user_id);
     rows.push({
-      kind: 'settle', sortKey: s.date, month: monthLabel(s.date), day: dayOfMonth(s.date),
+      kind: 'settle', id: s.id, sortKey: s.date, month: monthLabel(s.date), day: dayOfMonth(s.date),
       desc: t('history.settlementDesc', { from: fromName, to: toName }), cat: 'Settled', amount: s.amount,
       payerLabel: t('history.repayment'),
       loggedByLabel: null,
@@ -1444,9 +1511,14 @@ function renderHistory() {
         <div class="month-group">
           <div class="month-head"><div class="eyebrow">${escapeHtml(g.month)}</div><div class="month-total tabular">${g.total}</div></div>
           ${g.items.map((e) => {
-            const editable = state.me.role === 'admin' && e.kind === 'expense';
+            const isAdmin = state.me.role === 'admin';
+            const editable = isAdmin && (e.kind === 'expense' || e.kind === 'settle');
             const tag = editable ? 'button' : 'div';
-            const attrs = editable ? `data-action="history.editShares" data-expense-id="${e.id}"` : '';
+            const attrs = e.kind === 'expense' && isAdmin
+              ? `data-action="history.editShares" data-expense-id="${e.id}"`
+              : e.kind === 'settle' && isAdmin
+                ? `data-action="history.deleteSettlement" data-settlement-id="${e.id}"`
+                : '';
             return `
             <${tag} class="history-row" ${attrs}>
               <div class="history-day tabular">${e.day}</div>
@@ -1468,7 +1540,45 @@ function renderHistory() {
           }).join('')}
         </div>
       `).join('')}
+      ${renderTrash()}
       <div style="height:20px"></div>
+    </div>
+  `;
+}
+
+function renderTrash() {
+  if (state.me.role !== 'admin') return '';
+  const items = [
+    ...state.deletedExpenses.map((e) => ({
+      id: e.id, kind: 'expense', desc: e.description, amount: e.amount, deleted_at: e.deleted_at, by: e.deleted_by_id,
+    })),
+    ...state.deletedSettlements.map((s) => ({
+      id: s.id, kind: 'settle', deleted_at: s.deleted_at, by: s.deleted_by_id, amount: s.amount,
+      desc: t('history.settlementDesc', { from: nameOf(s.from_user_id), to: nameOf(s.to_user_id) }),
+    })),
+  ].sort((a, b) => String(b.deleted_at).localeCompare(String(a.deleted_at)));
+  if (!items.length) return '';
+
+  return `
+    <div class="month-group">
+      <button class="month-head" style="width:100%;border:0;background:transparent;padding:0;cursor:pointer" data-action="history.toggleTrash">
+        <div class="eyebrow">${t(items.length === 1 ? 'trash.titleOne' : 'trash.titleMany', { n: fmt(items.length) })}</div>
+        <div class="faint" style="font-size:12px">${state.trashOpen ? t('trash.hide') : t('trash.show')}</div>
+      </button>
+      ${state.trashOpen ? items.map((it) => `
+        <div class="history-row" style="opacity:.7">
+          <div class="history-main">
+            <div class="history-top">
+              <div class="history-desc" style="text-decoration:line-through">${escapeHtml(it.desc)}</div>
+              <div class="history-amount tabular">${fmt(it.amount)}</div>
+            </div>
+            <div class="history-tags">
+              <span class="payer-label faint">${escapeHtml(t('trash.deletedBy', { name: it.by ? nameOf(it.by) : '—', when: fmtDateTime(it.deleted_at) }))}</span>
+            </div>
+          </div>
+          <button class="btn-pill-ghost" data-action="${it.kind === 'expense' ? 'history.restoreExpense' : 'history.restoreSettlement'}" data-id="${it.id}">${t('trash.restore')}</button>
+        </div>
+      `).join('') : ''}
     </div>
   `;
 }
@@ -1647,6 +1757,7 @@ function renderEditSharesSheet() {
       </div>
 
       <button class="btn-primary" style="margin-top:18px" data-action="shares.save" ${state.editSharesSaving ? 'disabled' : ''}>${state.editSharesSaving ? t('common.saving') : t('editShares.save')}</button>
+      <button class="sheet-cancel" style="display:block;margin:14px auto 0;color:var(--danger-text)" data-action="shares.deleteExpense" ${state.editSharesSaving ? 'disabled' : ''}>${t('editShares.delete')}</button>
     </div>
   `;
 }
@@ -2381,10 +2492,15 @@ function handleAction(action, el) {
     case 'draft.pickDate': return openDatePicker(el);
     case 'draft.save': return saveExpense();
     case 'history.editShares': return openEditSharesSheet(Number(el.dataset.expenseId));
+    case 'history.deleteSettlement': return deleteSettlement(Number(el.dataset.settlementId));
+    case 'history.toggleTrash': state.trashOpen = !state.trashOpen; return render();
+    case 'history.restoreExpense': return restoreExpense(Number(el.dataset.id));
+    case 'history.restoreSettlement': return restoreSettlement(Number(el.dataset.id));
     case 'shares.togglePerson': return toggleShareParticipant(el.dataset.userId);
     case 'shares.inc': return bumpShare(el.dataset.userId, 1);
     case 'shares.dec': return bumpShare(el.dataset.userId, -1);
     case 'shares.save': return saveShares();
+    case 'shares.deleteExpense': return deleteExpenseFromSheet();
     case 'settle.pick': return pickCounterparty(el.dataset.userId);
     case 'settle.full': { const t = getSettleTarget(); if (t) state.settleDraft.amount = fmt(t.amount); return render(); }
     case 'settle.half': { const t = getSettleTarget(); if (t) state.settleDraft.amount = fmt(t.amount / 2); return render(); }
